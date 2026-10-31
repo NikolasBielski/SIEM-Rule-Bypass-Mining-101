@@ -1,0 +1,13 @@
+// hunt-ready (watchlist): AdminSDHolder Modifications
+// challenge: CH1
+// original rule window: queryFrequency=PT1H  queryPeriod=PT1H  |  hunt widened to scan the full 730d watchlist (step/bin sizes preserved)
+// backtest: set the Logs time-picker to 'Set in query' (or Last 2 years)
+// functions used: SecurityEvent_CH1
+
+SecurityEvent_CH1
+| where EventID == 5136 and EventData contains "<Data Name=\"ObjectDN\">CN=AdminSDHolder,CN=System"
+| parse EventData with * 'ObjectDN">' ObjectDN "<" *
+| summarize StartTime = min(TimeGenerated), EndTime = max(TimeGenerated) by Computer, SubjectAccount, SubjectUserSid, SubjectLogonId, ObjectDN
+| extend HostName = tostring(split(Computer, ".")[0]), DomainIndex = toint(indexof(Computer, '.'))
+| extend HostNameDomain = iff(DomainIndex != -1, substring(Computer, DomainIndex + 1), Computer)
+| extend Name = tostring(split(SubjectAccount, "\\")[1]), NTDomain = tostring(split(SubjectAccount, "\\")[0])

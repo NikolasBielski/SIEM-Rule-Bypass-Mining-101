@@ -1,0 +1,23 @@
+// hunt-ready (watchlist): User State changed from Guest to Member
+// challenge: CH2
+// original rule window: queryFrequency=P1D  queryPeriod=P1D  |  hunt widened to scan the full 730d watchlist (step/bin sizes preserved)
+// backtest: set the Logs time-picker to 'Set in query' (or Last 2 years)
+// functions used: AuditLogs_CH2
+
+AuditLogs_CH2
+  | where OperationName =~ "Update user"
+  | where Result =~ "success"
+  | mv-expand TargetResources
+  | mv-expand TargetResources.modifiedProperties
+  | where TargetResources_modifiedProperties.displayName =~ "TargetId.UserType"
+  | extend UpdatingAppName = tostring(parse_json(tostring(InitiatedBy.app)).displayName)
+  | extend UpdatingServicePrincipalId = tostring(parse_json(tostring(InitiatedBy.app)).servicePrincipalId)
+  | extend UpdatingUserPrincipalName = tostring(parse_json(tostring(InitiatedBy.user)).userPrincipalName)
+  | extend UpdatingUserAadUserId = tostring(parse_json(tostring(InitiatedBy.user)).id)
+  | extend UpdatingUserIPAddress = tostring(parse_json(tostring(InitiatedBy.user)).ipAddress)
+  | extend UpdatingUser = iif(isnotempty(UpdatingServicePrincipalId), UpdatingServicePrincipalId, UpdatingUserPrincipalName)
+  | extend UpdatedUserPrincipalName = tostring(TargetResources.userPrincipalName)
+  | project-reorder TimeGenerated, UpdatedUserPrincipalName, UpdatingUser
+  | where parse_json(tostring(TargetResources_modifiedProperties.newValue)) =~ "\"Member\"" and parse_json(tostring(TargetResources_modifiedProperties.oldValue)) =~ "\"Guest\""
+  | extend InitiatingAccountName = tostring(split(UpdatingUserPrincipalName, "@")[0]), InitiatingAccountUPNSuffix = tostring(split(UpdatingUserPrincipalName, "@")[1])
+  | extend TargetAccountName = tostring(split(UpdatedUserPrincipalName, "@")[0]), TargetAccountUPNSuffix = tostring(split(UpdatedUserPrincipalName, "@")[1])

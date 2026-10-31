@@ -1,0 +1,27 @@
+// hunt-ready (watchlist): Anomalous Single Factor Signin
+// challenge: CH2
+// original rule window: queryFrequency=P1D  queryPeriod=P7D  |  hunt widened to scan the full 730d watchlist (step/bin sizes preserved)
+// backtest: set the Logs time-picker to 'Set in query' (or Last 2 years)
+// functions used: SigninLogs_CH2
+
+let known_locations = (SigninLogs_CH2
+  | where TimeGenerated between(ago(7d)..ago(1d))
+  | where ResultType == 0
+  | extend LocationDetail = strcat(Location, "-", LocationDetails.state)
+  | summarize by LocationDetail);
+let known_asn = (SigninLogs_CH2
+  | where TimeGenerated between(ago(7d)..ago(1d))
+  | where ResultType == 0
+  | summarize by AutonomousSystemNumber);
+SigninLogs_CH2
+| where TimeGenerated > ago(730d)
+| where ResultType == 0
+| where isempty(DeviceDetail.deviceId)
+| where AuthenticationRequirement == "singleFactorAuthentication"
+| extend LocationParsed = parse_json(LocationDetails), DeviceParsed = parse_json(DeviceDetail)
+| extend City = tostring(LocationParsed.city), State = tostring(LocationParsed.state)
+| extend LocationDetail = strcat(Location, "-", State)
+| extend DeviceId = tostring(DeviceParsed.deviceId), DeviceName=tostring(DeviceParsed.displayName), OS=tostring(DeviceParsed.operatingSystem), Browser=tostring(DeviceParsed.browser)
+| where AutonomousSystemNumber !in (known_asn) and LocationDetail !in (known_locations)
+| project TimeGenerated, Type, UserId, UserDisplayName, UserPrincipalName, IPAddress, Location, State, City, ResultType, ResultDescription, AppId, AppDisplayName, AuthenticationRequirement, ConditionalAccessStatus, ResourceDisplayName, ClientAppUsed, Identity, HomeTenantId, ResourceTenantId, Status, UserAgent, DeviceId, DeviceName, OS, Browser, MfaDetail
+| extend Name = tostring(split(UserPrincipalName,'@',0)[0]), UPNSuffix = tostring(split(UserPrincipalName,'@',1)[0])

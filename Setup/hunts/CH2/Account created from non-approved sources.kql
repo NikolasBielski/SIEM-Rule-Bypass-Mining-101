@@ -1,0 +1,43 @@
+// hunt-ready (watchlist): Account created from non-approved sources
+// challenge: CH2
+// original rule window: queryFrequency=P1D  queryPeriod=P7D  |  hunt widened to scan the full 730d watchlist (step/bin sizes preserved)
+// backtest: set the Logs time-picker to 'Set in query' (or Last 2 years)
+// functions used: AuditLogs_CH2, SigninLogs_CH2
+
+let core_domains = (SigninLogs_CH2
+  | where TimeGenerated > ago(730d)
+  | where ResultType == 0
+  | extend domain = tolower(split(UserPrincipalName, "@")[1])
+  | summarize by tostring(domain));
+  let alternative_domains = (SigninLogs_CH2
+  | where TimeGenerated > ago(730d)
+  | where isnotempty(AlternateSignInName)
+  | where ResultType == 0
+  | extend domain = tolower(split(AlternateSignInName, "@")[1])
+  | summarize by tostring(domain));
+  AuditLogs_CH2
+  | where TimeGenerated > ago(730d)
+  | where OperationName =~ "Add User"
+  | extend InitiatingAppName = tostring(InitiatedBy.app.displayName)
+  | extend InitiatingAppServicePrincipalId = tostring(InitiatedBy.app.servicePrincipalId)
+  | extend InitiatingUserPrincipalName = tostring(InitiatedBy.user.userPrincipalName)
+  | extend InitiatingAadUserId = tostring(InitiatedBy.user.id)
+  | extend InitiatingIpAddress = tostring(iff(isnotempty(InitiatedBy.user.ipAddress), InitiatedBy.user.ipAddress, InitiatedBy.app.ipAddress))
+  | extend UserAdded = tostring(TargetResources[0].userPrincipalName)
+  | extend UserAddedDomain = case(
+  UserAdded has "#EXT#", tostring(split(tostring(split(UserAdded, "#EXT#")[0]), "_")[1]),
+  UserAdded !has "#EXT#", tostring(split(UserAdded, "@")[1]),
+  UserAdded)
+  | where UserAddedDomain !in (core_domains) and UserAddedDomain !in (alternative_domains)
+  | extend AddedByName = case(
+  InitiatingUserPrincipalName has "#EXT#", tostring(split(tostring(split(InitiatingUserPrincipalName, "#EXT#")[0]), "_")[0]),
+  InitiatingUserPrincipalName !has "#EXT#", tostring(split(InitiatingUserPrincipalName, "@")[0]),
+  InitiatingUserPrincipalName)
+  | extend AddedByUPNSuffix = case(
+  InitiatingUserPrincipalName has "#EXT#", tostring(split(tostring(split(InitiatingUserPrincipalName, "#EXT#")[0]), "_")[1]),
+  InitiatingUserPrincipalName !has "#EXT#", tostring(split(InitiatingUserPrincipalName, "@")[1]),
+  InitiatingUserPrincipalName)
+  | extend UserAddedName = case(
+  UserAdded has "#EXT#", tostring(split(tostring(split(UserAdded, "#EXT#")[0]), "_")[0]),
+  UserAdded !has "#EXT#", tostring(split(UserAdded, "@")[0]),
+  UserAdded)

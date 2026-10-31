@@ -1,0 +1,23 @@
+// hunt-ready (watchlist): Deprecated - SUNSPOT log file creation
+// challenge: CH1
+// original rule window: queryFrequency=P1D  queryPeriod=P1D  |  hunt widened to scan the full 730d watchlist (step/bin sizes preserved)
+// backtest: set the Logs time-picker to 'Set in query' (or Last 2 years)
+// functions used: SecurityEvent_CH1
+
+union isfuzzy=true
+(DeviceFileEvents
+| where FolderPath endswith "vmware-vmdmp.log"
+| extend HostCustomEntity = DeviceName, timestamp=TimeGenerated),
+(WindowsEvent
+| where EventID == 4663 and EventData has "vmware-vmdmp.log"
+| extend ObjectName = tostring(EventData.ObjectName) 
+| where ObjectName endswith "vmware-vmdmp.log"
+| extend HostCustomEntity = Computer, timestamp=TimeGenerated),
+(SecurityEvent_CH1
+| where EventID == 4663
+| where ObjectName endswith "vmware-vmdmp.log"
+| extend HostCustomEntity = Computer, timestamp=TimeGenerated),
+(imFileEvent
+| where TargetFileName endswith "vmware-vmdmp.log"
+| extend HostCustomEntity = DvcHostname, timestamp=TimeGenerated
+)

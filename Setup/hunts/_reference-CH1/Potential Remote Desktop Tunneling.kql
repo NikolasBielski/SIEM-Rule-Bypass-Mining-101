@@ -1,0 +1,11 @@
+// hunt-ready (watchlist): Potential Remote Desktop Tunneling
+// challenge: CH1
+// original rule window: queryFrequency=PT1H  queryPeriod=PT1H  |  hunt widened to scan the full 730d watchlist (step/bin sizes preserved)
+// backtest: set the Logs time-picker to 'Set in query' (or Last 2 years)
+// functions used: SecurityEvent_CH1
+
+SecurityEvent_CH1
+   | where EventID in (4624,4625) and LogonType in (10) and IpAddress in ("::1","127.0.0.1")
+   | summarize StartTime = min(TimeGenerated), EndTime = max(TimeGenerated) by EventID, Computer, TargetUserName, TargetLogonId, LogonType, IpAddress
+   | extend Name=tostring(split(TargetUserName, "@")[0]), UPNSuffix=tostring(split(TargetUserName, "@")[1])
+   | extend HostName = iif(Computer has '.',substring(Computer,0,indexof(Computer,'.')),Computer) , DnsDomain = iif(Computer has '.',substring(Computer,indexof(Computer,'.')+1),'')

@@ -1,0 +1,46 @@
+// hunt-ready (watchlist): Risky user signin observed in non-Microsoft network device
+// challenge: CH2+CH3
+// original rule window: queryFrequency=P1D  queryPeriod=P1D  |  hunt widened to scan the full 730d watchlist (step/bin sizes preserved)
+// backtest: set the Logs time-picker to 'Set in query' (or Last 2 years)
+// functions used: CommonSecurityLog_CH3, SigninLogs_CH2
+
+SigninLogs_CH2
+//Find risky Signin
+| where RiskState == "atRisk" and ResultType == 0
+| extend Signin_Time = TimeGenerated
+| summarize
+    AppDisplayName=make_set(AppDisplayName),
+    ClientAppUsed=make_set(ClientAppUsed),
+    UserAgent=make_set(UserAgent),
+    CorrelationId=make_set(CorrelationId),
+    Signin_Time= min(Signin_Time),
+    RiskEventTypes=make_set(RiskEventTypes)
+    by
+    ConditionalAccessStatus,
+    IPAddress,
+    IsRisky,
+    ResourceDisplayName,
+    RiskDetail,
+    ResultType,
+    RiskLevelAggregated,
+    RiskLevelDuringSignIn,
+    RiskState,
+    UserPrincipalName=tostring(tolower(UserPrincipalName)),
+    SourceSystem
+| join kind=inner (
+    CommonSecurityLog_CH3
+    | where DeviceVendor has_any  ("Palo Alto Networks", "Fortinet", "Check Point", "Zscaler")
+    | where DeviceProduct startswith "FortiGate" or DeviceProduct startswith  "PAN" or DeviceProduct startswith  "VPN" or DeviceProduct startswith "FireWall" or DeviceProduct startswith  "NSSWeblog" or DeviceProduct startswith "URL"
+    | where DeviceAction != "Block"
+    | where isnotempty(RequestURL)
+    | where isnotempty(SourceUserName)
+    | extend SourceUserName = tolower(SourceUserName)
+    | summarize
+        min(TimeGenerated),
+        max(TimeGenerated),
+        Activity=make_set(Activity)
+        by DestinationHostName, DestinationIP, RequestURL, SourceUserName=tostring(tolower(SourceUserName)),DeviceVendor,DeviceProduct
+    | extend 3p_observed_Time= min_TimeGenerated,Name = tostring(split(SourceUserName,"@")[0]),UPNSuffix =tostring(split(SourceUserName,"@")[1]))
+    on $left.IPAddress == $right.DestinationIP and $left.UserPrincipalName == $right.SourceUserName
+| extend Timediff = datetime_diff('day', 3p_observed_Time, Signin_Time)
+| where Timediff <= 1 and Timediff >= 0

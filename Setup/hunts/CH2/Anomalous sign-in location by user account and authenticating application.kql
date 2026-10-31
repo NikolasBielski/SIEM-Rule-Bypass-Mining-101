@@ -1,0 +1,27 @@
+// hunt-ready (watchlist): Anomalous sign-in location by user account and authenticating application
+// challenge: CH2
+// original rule window: queryFrequency=P1D  queryPeriod=P7D  |  hunt widened to scan the full 730d watchlist (step/bin sizes preserved)
+// backtest: set the Logs time-picker to 'Set in query' (or Last 2 years)
+// functions used: SigninLogs_CH2
+// FLAGS: also unions AADNonInteractiveUserSignInLogs (no watchlist) | make-series baseline - widen its from/to to 730d by hand (step kept)
+
+// Adjust this figure to adjust how sensitive this detection is
+let sensitivity = 2.5;
+let AuthEvents = materialize(
+union isfuzzy=True SigninLogs_CH2, AADNonInteractiveUserSignInLogs
+| where TimeGenerated > ago(730d)
+| where ResultType == 0
+| extend LocationDetails = LocationDetails_dynamic
+| extend Location = strcat(LocationDetails.countryOrRegion, "-", LocationDetails.state,"-", LocationDetails.city)
+| where Location != "--");
+AuthEvents
+| summarize dcount(Location) by AppDisplayName, AppId, UserPrincipalName, UserId, bin(startofday(TimeGenerated), 1d)
+| where dcount_Location > 2
+| make-series CountOfLocations = sum(dcount_Location) on TimeGenerated  step 1d by AppId, UserId
+| extend (Anomalies, Score, Baseline) = series_decompose_anomalies(CountOfLocations, sensitivity, -1, 'linefit')
+| mv-expand CountOfLocations to typeof(double), TimeGenerated to typeof(datetime), Anomalies to typeof(double), Score to typeof(double), Baseline to typeof(long)
+| where Anomalies > 0 and Baseline > 0
+| join kind=inner( AuthEvents | extend TimeStamp = startofday(TimeGenerated)) on UserId, AppId
+| extend SignInDetails = bag_pack("TimeGenerated", TimeGenerated1, "Location", Location, "Source", IPAddress, "Device", DeviceDetail_dynamic)
+| summarize SignInDetailsSet=make_set(SignInDetails, 1000) by UserId, UserPrincipalName, CountOfLocations, TimeGenerated, AppId, AppDisplayName
+| extend Name = split(UserPrincipalName, "@")[0], UPNSuffix = split(UserPrincipalName, "@")[1]

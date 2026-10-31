@@ -1,0 +1,28 @@
+// hunt-ready (watchlist): Conditional Access Policy Modified by New User
+// challenge: CH2
+// original rule window: queryFrequency=P1D  queryPeriod=P14D  |  hunt widened to scan the full 730d watchlist (step/bin sizes preserved)
+// backtest: set the Logs time-picker to 'Set in query' (or Last 2 years)
+// functions used: AuditLogs_CH2
+
+let known_users = (AuditLogs_CH2
+  | where TimeGenerated between(ago(14d)..ago(1d))
+  | where OperationName has "conditional access policy"
+  | where Result =~ "success"
+  | extend InitiatingUserPrincipalName = tostring(InitiatedBy.user.userPrincipalName)
+  | summarize by InitiatingUserPrincipalName);
+  AuditLogs_CH2
+  | where TimeGenerated > ago(730d)
+  | where OperationName has "conditional access policy"
+  | where Result =~ "success"
+  | extend InitiatingAppName = tostring(InitiatedBy.app.displayName)
+  | extend InitiatingAppId = tostring(InitiatedBy.app.appId)
+  | extend InitiatingAppServicePrincipalId = tostring(InitiatedBy.app.servicePrincipalId)
+  | extend InitiatingUserPrincipalName = tostring(InitiatedBy.user.userPrincipalName)
+  | extend InitiatingAadUserId = tostring(InitiatedBy.user.id)
+  | extend InitiatingIPAddress = tostring(InitiatedBy.user.ipAddress)
+  | extend CAPolicyName = tostring(TargetResources[0].displayName)
+  | where InitiatingUserPrincipalName !in (known_users)
+  | extend NewPolicyValues = TargetResources[0].modifiedProperties[0].newValue
+  | extend OldPolicyValues = TargetResources[0].modifiedProperties[0].oldValue
+  | extend InitiatingAccountName = tostring(split(InitiatingUserPrincipalName, "@")[0]), InitiatingAccountUPNSuffix = tostring(split(InitiatingUserPrincipalName, "@")[1])
+  | project-reorder TimeGenerated, OperationName, CAPolicyName, InitiatingAppId, InitiatingAppName, InitiatingAppServicePrincipalId, InitiatingUserPrincipalName, InitiatingAadUserId, InitiatingIPAddress, NewPolicyValues, OldPolicyValues

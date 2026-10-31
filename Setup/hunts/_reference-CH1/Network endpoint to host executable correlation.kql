@@ -1,0 +1,27 @@
+// hunt-ready (watchlist): Network endpoint to host executable correlation
+// challenge: CH1+CH3
+// original rule window: queryFrequency=P1D  queryPeriod=P1D  |  hunt widened to scan the full 730d watchlist (step/bin sizes preserved)
+// backtest: set the Logs time-picker to 'Set in query' (or Last 2 years)
+// functions used: CommonSecurityLog_CH3, SecurityEvent_CH1
+
+let endpointData = 
+(union isfuzzy=true
+(SecurityEvent_CH1
+  | where EventID == 4688
+  | extend shortFileName = tolower(tostring(split(NewProcessName, '\\')[-1]))
+  ),
+  (WindowsEvent
+  | where EventID == 4688
+  | extend  NewProcessName = tostring(EventData.NewProcessName)
+  | extend shortFileName = tolower(tostring(split(NewProcessName, '\\')[-1]))
+  | extend TargetUserName = tostring(EventData.TargetUserName)
+  ));
+// Correlate suspect executables seen in TrendMicro rule updates with similar activity on endpoints
+CommonSecurityLog_CH3
+| where DeviceVendor =~ "Trend Micro"
+| where Activity =~ "Deny List updated" 
+| where RequestURL endswith ".exe"
+| project TimeGenerated, Activity , RequestURL , SourceIP, DestinationIP
+| extend suspectExeName = tolower(tostring(split(RequestURL, '/')[-1]))
+| join kind=innerunique (endpointData) on $left.suspectExeName == $right.shortFileName 
+| extend HostName = tostring(split(Computer, '.', 0)[0]), DnsDomain = tostring(strcat_array(array_slice(split(Computer, '.'), 1, -1), '.'))

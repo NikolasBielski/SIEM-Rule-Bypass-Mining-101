@@ -1,0 +1,14 @@
+// hunt-ready (watchlist): Changes to PIM Settings
+// challenge: CH2
+// original rule window: queryFrequency=P1D  queryPeriod=P1D  |  hunt widened to scan the full 730d watchlist (step/bin sizes preserved)
+// backtest: set the Logs time-picker to 'Set in query' (or Last 2 years)
+// functions used: AuditLogs_CH2
+
+AuditLogs_CH2
+  | where Category =~ "RoleManagement"
+  | where OperationName =~ "Update role setting in PIM"
+  | extend InitiatingUserPrincipalName = tostring(InitiatedBy.user.userPrincipalName)
+  | extend InitiatingAadUserId = tostring(InitiatedBy.user.id)
+  | extend InitiatingIPAddress = tostring(InitiatedBy.user.ipAddress)
+  | extend InitiatingAccountName = tostring(split(InitiatingUserPrincipalName, "@")[0]), InitiatingAccountUPNSuffix = tostring(split(InitiatingUserPrincipalName, "@")[1])
+  | project-reorder TimeGenerated, OperationName, ResultReason, InitiatingUserPrincipalName, InitiatingAadUserId, InitiatingIPAddress, InitiatingAccountName, InitiatingAccountUPNSuffix

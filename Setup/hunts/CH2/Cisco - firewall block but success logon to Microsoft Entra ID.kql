@@ -1,0 +1,25 @@
+// hunt-ready (watchlist): Cisco - firewall block but success logon to Microsoft Entra ID
+// challenge: CH2+CH3
+// original rule window: queryFrequency=P1D  queryPeriod=P1D  |  hunt widened to scan the full 730d watchlist (step/bin sizes preserved)
+// backtest: set the Logs time-picker to 'Set in query' (or Last 2 years)
+// functions used: CommonSecurityLog_CH3, SigninLogs_CH2
+// FLAGS: table(variable) - fix the let/tableName refs by hand | also unions AADNonInteractiveUserSignInLogs (no watchlist)
+
+let aadFunc = (tableName:string){
+CommonSecurityLog_CH3
+| where DeviceVendor =~ "Cisco"
+| where DeviceAction =~ "denied"
+| where ipv4_is_private(SourceIP) == false
+| summarize count() by SourceIP
+| join (
+    // Successful signins from IPs blocked by the firewall solution are suspect
+    // Include fully successful sign-ins, but also ones that failed only at MFA stage
+    // as that supposes the password was sucessfully guessed.
+  table(tableName)
+  | where ResultType in ("0", "50074", "50076")
+) on $left.SourceIP == $right.IPAddress
+| extend AccountName = tostring(split(Account, "@")[0]), AccountUPNSuffix = tostring(split(Account, "@")[1])
+};
+let aadSignin = aadFunc("SigninLogs_CH2");
+let aadNonInt = aadFunc("AADNonInteractiveUserSignInLogs");
+union isfuzzy=true aadSignin, aadNonInt

@@ -1,0 +1,12 @@
+// CH1 - Certutil Download-Abuse - BYPASSED  |  ADE3-01 Process Cloning + ADE2-04
+// Rule intent : catch certutil abused to fetch/stage a payload
+//               (-urlcache/-verifyctl/-decode) pulling from a URL.
+// The bug     : (1) ADE3-01 - keys on the PROCESS NAME (...\certutil.exe); the renamed
+//               svc_update.exe misses. (2) ADE2-04 - it also REQUIRES a URL
+//               (http/https/ftp) in the command line, but the attacker `-decode`s a
+//               LOCAL staged blob (upd.b64) - no URL - so it misses even without the rename.
+// Try it      : returns NOTHING on the CTF data (a double miss - rename + local decode).
+ProcessCreate_CH1
+| where Process endswith "certutil.exe"                          // ADE3-01: renameable
+| where CommandLine has_any ("-urlcache","-verifyctl","-decode","-decodehex")
+| where CommandLine has_any ("http://","https://","ftp://")     // ADE2-04: assumes a network fetch

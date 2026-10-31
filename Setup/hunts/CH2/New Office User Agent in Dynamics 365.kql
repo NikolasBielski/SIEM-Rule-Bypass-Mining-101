@@ -1,0 +1,24 @@
+// hunt-ready (watchlist): New Office User Agent in Dynamics 365
+// challenge: CH2
+// original rule window: queryFrequency=P1D  queryPeriod=P7D  |  hunt widened to scan the full 730d watchlist (step/bin sizes preserved)
+// backtest: set the Logs time-picker to 'Set in query' (or Last 2 years)
+// functions used: OfficeActivity_CH2
+
+let timeframe = 1h;
+let lookback = 730d;
+let known_useragents = dynamic([]);
+Dynamics365Activity
+| where TimeGenerated > ago(730d)
+| extend Message = tostring(split(OriginalObjectId, ' ')[0])
+| where Message =~ "UserSignIn"
+| extend IPAddress = tostring(split(ClientIP, ":")[0])
+| where isnotempty(UserAgent)
+// Exclude user agents with a render agent to reduce noise
+| where UserAgent has_any ("Gecko", "WebKit", "Presto", "Trident", "EdgeHTML", "Blink")
+| join kind=leftanti(
+OfficeActivity_CH2
+| where TimeGenerated > ago(730d)
+| where UserAgent !in~ (known_useragents))
+on UserAgent
+| summarize MostRecentActivity=max(TimeGenerated), IPs=make_set(IPAddress), Users=make_set(UserId), Actions=make_set(OriginalObjectId) by UserAgent
+| extend timestamp = MostRecentActivity

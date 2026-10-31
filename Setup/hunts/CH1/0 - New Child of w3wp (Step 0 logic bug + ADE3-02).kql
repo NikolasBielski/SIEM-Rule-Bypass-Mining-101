@@ -1,0 +1,14 @@
+// CH1 - New Child Process of w3wp.exe - BYPASSED  |  Step 0 logic bug (+ ADE3-02)
+// Rule intent : catch an IIS worker (w3wp.exe) spawning an unusual child process -
+//               the classic "web shell spawned cmd/powershell/certutil" tell.
+// The bug     : (1) LOGIC BUG - the rule can only ever see a *spawned child*. The
+//               foothold compiles the implant IN-PROCESS with Roslyn and runs it via
+//               Assembly.Load(bytes), so w3wp spawns NO child at all -> the attack is
+//               invisible to this rule (it would have led straight to C2 on its own).
+//               (2) ADE3-02 - the "child not seen in 14 days" baseline is poisonable:
+//               one prior benign spawn of the same image name suppresses the alert.
+// Try it      : on the CTF data this surfaces only the BENIGN w3wp -> csc.exe
+//               compilation noise; the real foothold has no child, so it never appears.
+SecurityEvent_CH1
+| where ParentProcessName has "w3wp.exe"
+| project TimeGenerated, Computer, Account, NewProcessName, CommandLine, ParentProcessName

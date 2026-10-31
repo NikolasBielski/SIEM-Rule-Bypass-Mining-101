@@ -1,0 +1,50 @@
+// hunt-ready (watchlist): Privileged Accounts - Sign in Failure Spikes
+// challenge: CH2
+// original rule window: queryFrequency=P1D  queryPeriod=P14D  |  hunt widened to scan the full 730d watchlist (step/bin sizes preserved)
+// backtest: set the Logs time-picker to 'Set in query' (or Last 2 years)
+// functions used: SigninLogs_CH2
+// FLAGS: table(variable) - fix the let/tableName refs by hand | also unions AADNonInteractiveUserSignInLogs (no watchlist) | make-series baseline - widen its from/to to 730d by hand (step kept)
+
+let starttime = 730d;
+let timeframe = 1d;
+let scorethreshold = 3;
+let baselinethreshold = 5;
+let aadFunc = (tableName:string){
+    IdentityInfo
+    | where TimeGenerated > ago(730d)
+    | summarize arg_max(TimeGenerated, *) by AccountUPN
+    | mv-expand AssignedRoles
+    | where AssignedRoles contains 'Admin' or GroupMembership has "Admin"
+    | summarize Roles = make_list(AssignedRoles) by AccountUPN = tolower(AccountUPN)
+    | join kind=inner (
+        table(tableName)
+        | where TimeGenerated between (startofday(ago(starttime))..startofday(now()))
+        | where ResultType != 0
+        | extend UserPrincipalName = tolower(UserPrincipalName)
+    ) on $left.AccountUPN == $right.UserPrincipalName
+    | extend timestamp = TimeGenerated, AccountCustomEntity = UserPrincipalName, Roles = tostring(Roles)
+};
+let aadSignin = aadFunc("SigninLogs_CH2");
+let aadNonInt = aadFunc("AADNonInteractiveUserSignInLogs");
+let allSignins = union isfuzzy=true aadSignin, aadNonInt;
+let TimeSeriesAlerts = 
+    allSignins
+    | make-series HourlyCount=count() on TimeGenerated from startofday(ago(starttime)) to startofday(now()) step 1h by UserPrincipalName, Roles
+    | extend (anomalies, score, baseline) = series_decompose_anomalies(HourlyCount, scorethreshold, -1, 'linefit')
+    | mv-expand HourlyCount to typeof(double), TimeGenerated to typeof(datetime), anomalies to typeof(double), score to typeof(double), baseline to typeof(long)
+    // Filtering low count events per baselinethreshold
+    | where anomalies > 0 and baseline > baselinethreshold
+    | extend AnomalyHour = TimeGenerated
+    | project UserPrincipalName, Roles, AnomalyHour, TimeGenerated, HourlyCount, baseline, anomalies, score;
+// Filter the alerts for specified timeframe
+TimeSeriesAlerts
+| where TimeGenerated > startofday(ago(timeframe))
+| join kind=inner ( 
+    allSignins
+    | where TimeGenerated > startofday(ago(timeframe))
+    // create a new column and round to hour
+    | extend DateHour = bin(TimeGenerated, 1h)
+    | summarize PartialFailedSignins = count(), LatestAnomalyTime = arg_max(TimeGenerated, *) by bin(TimeGenerated, 1h), OperationName, Category, ResultType, ResultDescription, UserPrincipalName, Roles, UserDisplayName, AppDisplayName, ClientAppUsed, IPAddress, ResourceDisplayName
+) on UserPrincipalName, $left.AnomalyHour == $right.DateHour
+| project LatestAnomalyTime, OperationName, Category, UserPrincipalName, Roles = todynamic(Roles), UserDisplayName, ResultType, ResultDescription, AppDisplayName, ClientAppUsed, UserAgent, IPAddress, Location, AuthenticationRequirement, ConditionalAccessStatus, ResourceDisplayName, PartialFailedSignins, TotalFailedSignins = HourlyCount, baseline, anomalies, score
+| extend Name = tostring(split(UserPrincipalName,'@',0)[0]), UPNSuffix = tostring(split(UserPrincipalName,'@',1)[0])

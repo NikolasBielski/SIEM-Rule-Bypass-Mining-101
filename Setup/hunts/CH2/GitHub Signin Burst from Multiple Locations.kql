@@ -1,0 +1,20 @@
+// hunt-ready (watchlist): GitHub Signin Burst from Multiple Locations
+// challenge: CH2
+// original rule window: queryFrequency=PT1H  queryPeriod=PT1H  |  hunt widened to scan the full 730d watchlist (step/bin sizes preserved)
+// backtest: set the Logs time-picker to 'Set in query' (or Last 2 years)
+// functions used: SigninLogs_CH2
+// FLAGS: table(variable) - fix the let/tableName refs by hand | also unions AADNonInteractiveUserSignInLogs (no watchlist)
+
+let locationThreshold = 1;
+let aadFunc = (tableName:string){
+table(tableName)
+| where AppDisplayName =~ "GitHub.com"
+| where ResultType == 0
+| summarize CountOfLocations = dcount(Location), Locations = make_set(Location,100), BurstStartTime = min(TimeGenerated), BurstEndTime = max(TimeGenerated) by UserPrincipalName, Type
+| where CountOfLocations > locationThreshold
+| extend timestamp = BurstStartTime
+};
+let aadSignin = aadFunc("SigninLogs_CH2");
+let aadNonInt = aadFunc("AADNonInteractiveUserSignInLogs");
+union isfuzzy=true aadSignin, aadNonInt
+| extend Name = tostring(split(UserPrincipalName,'@',0)[0]), UPNSuffix = tostring(split(UserPrincipalName,'@',1)[0])

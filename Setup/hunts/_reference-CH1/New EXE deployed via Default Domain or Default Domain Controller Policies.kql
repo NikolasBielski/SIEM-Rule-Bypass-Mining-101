@@ -1,0 +1,23 @@
+// hunt-ready (watchlist): New EXE deployed via Default Domain or Default Domain Controller Policies
+// challenge: CH1
+// original rule window: queryFrequency=P1D  queryPeriod=P14D  |  hunt widened to scan the full 730d watchlist (step/bin sizes preserved)
+// backtest: set the Logs time-picker to 'Set in query' (or Last 2 years)
+// functions used: SecurityEvent_CH1
+
+let known_processes = (
+  SecurityEvent_CH1
+  // If adjusting Query Period or Frequency update these
+  | where TimeGenerated between(ago(14d)..ago(1d))
+  | where EventID == 4688
+  | where NewProcessName has_any ("Policies\\{6AC1786C-016F-11D2-945F-00C04fB984F9}", "Policies\\{31B2F340-016D-11D2-945F-00C04FB984F9}")
+  | summarize by Process);
+  SecurityEvent_CH1
+  // If adjusting Query Period or Frequency update these
+  | where TimeGenerated > ago(730d)
+  | where EventID == 4688
+  | where NewProcessName has_any ("Policies\\{6AC1786C-016F-11D2-945F-00C04fB984F9}", "Policies\\{31B2F340-016D-11D2-945F-00C04FB984F9}")
+  | where Process !in (known_processes)
+  // This will likely apply to multiple hosts so summarize these data
+  | summarize FirstSeen=min(TimeGenerated), LastSeen=max(TimeGenerated) by Process, NewProcessName, CommandLine, Computer
+  | extend HostName = tostring(split(Computer, ".")[0]), DomainIndex = toint(indexof(Computer, '.'))
+  | extend HostNameDomain = iff(DomainIndex != -1, substring(Computer, DomainIndex + 1), Computer)

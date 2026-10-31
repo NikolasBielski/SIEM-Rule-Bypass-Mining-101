@@ -1,0 +1,28 @@
+// hunt-ready (watchlist): Midnight Blizzard - suspicious rundll32.exe execution of vbscript
+// challenge: CH1
+// original rule window: queryFrequency=P1D  queryPeriod=P1D  |  hunt widened to scan the full 730d watchlist (step/bin sizes preserved)
+// backtest: set the Logs time-picker to 'Set in query' (or Last 2 years)
+// functions used: SecurityEvent_CH1
+
+(union isfuzzy=true 
+(SecurityEvent_CH1
+| where EventID == 4688
+| where Process =~ 'rundll32.exe' 
+| where CommandLine has_all ('Execute','RegRead','window.close')
+| project TimeGenerated, Computer, SubjectAccount = Account, SubjectUserName, SubjectDomainName, SubjectUserSid, Process, ProcessId, NewProcessName, CommandLine, ParentProcessName, _ResourceId
+),
+(WindowsEvent
+| where EventID == 4688 and EventData has 'rundll32.exe' and EventData has_any ('Execute','RegRead','window.close')
+| extend NewProcessName = tostring(EventData.NewProcessName)
+| extend Process=tostring(split(NewProcessName, '\\')[-1])
+| where Process =~ 'rundll32.exe' 
+| extend CommandLine = tostring(EventData.CommandLine)
+| where CommandLine has_all ('Execute','RegRead','window.close')
+| extend SubjectAccount =  strcat(EventData.SubjectDomainName,"\\", EventData.SubjectUserName)
+| extend ParentProcessName = tostring(EventData.ParentProcessName)  
+| project TimeGenerated, Computer, SubjectAccount, SubjectUserName = tostring(EventData.SubjectUserName), SubjectDomainName = tostring(EventData.SubjectDomainName), SubjectUserSid = tostring(EventData.SubjectUserSid), Process, NewProcessName, CommandLine, ParentProcessName, _ResourceId
+)
+)
+| extend HostName = tostring(split(Computer, ".")[0]), DomainIndex = toint(indexof(Computer, '.'))
+| extend HostNameDomain = iff(DomainIndex != -1, substring(Computer, DomainIndex + 1), Computer)
+| project-away DomainIndex

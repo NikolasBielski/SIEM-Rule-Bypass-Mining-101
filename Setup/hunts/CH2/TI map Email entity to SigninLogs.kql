@@ -1,0 +1,35 @@
+// hunt-ready (watchlist): TI map Email entity to SigninLogs
+// challenge: CH2
+// original rule window: queryFrequency=PT1H  queryPeriod=P14D  |  hunt widened to scan the full 730d watchlist (step/bin sizes preserved)
+// backtest: set the Logs time-picker to 'Set in query' (or Last 2 years)
+// functions used: SigninLogs_CH2
+// FLAGS: also unions AADNonInteractiveUserSignInLogs (no watchlist)
+
+let dt_lookBack = 1h;
+let ioc_lookBack = 14d;
+let emailregex = @'^[a-zA-Z0-9_.+-]+@[a-zA-Z0-9-]+\.[a-zA-Z0-9-.]+$';
+let Signins = materialize(union isfuzzy=true
+( SigninLogs_CH2 | where TimeGenerated >= ago(730d)),
+( AADNonInteractiveUserSignInLogs | where TimeGenerated >= ago(730d)
+    | extend Status = todynamic(Status), LocationDetails = todynamic(LocationDetails))
+| where isnotempty(UserPrincipalName) and UserPrincipalName matches regex emailregex
+| extend UserPrincipalName = tolower(UserPrincipalName)
+| extend Status = todynamic(Status), LocationDetails = todynamic(LocationDetails)
+| extend StatusCode = tostring(Status.errorCode), StatusDetails = tostring(Status.additionalDetails)
+| extend State = tostring(LocationDetails.state), City = tostring(LocationDetails.city), Region = tostring(LocationDetails.countryOrRegion)
+| extend SigninLogs_TimeGenerated = TimeGenerated);
+let SigninUPNs = Signins | distinct UserPrincipalName | summarize make_list(UserPrincipalName);
+ThreatIntelligenceIndicator
+//Filtering the table for Email related IOCs
+| where isnotempty(EmailSenderAddress)
+| where TimeGenerated >= ago(730d)
+| where EmailSenderAddress in (SigninUPNs)
+| summarize LatestIndicatorTime = arg_max(TimeGenerated, *) by IndicatorId
+| where Active == true and ExpirationDateTime > now()
+| where Description !contains_cs "State: inactive;" and Description !contains_cs "State: falsepos;"
+| join kind=innerunique (Signins) on $left.EmailSenderAddress == $right.UserPrincipalName
+| where SigninLogs_TimeGenerated < ExpirationDateTime
+| summarize SigninLogs_TimeGenerated = arg_max(SigninLogs_TimeGenerated, *) by IndicatorId, UserPrincipalName
+| project SigninLogs_TimeGenerated, Description, ActivityGroupNames, IndicatorId, ThreatType, Url, ExpirationDateTime, ConfidenceScore, EmailSenderName, EmailRecipient, EmailSourceDomain, EmailSourceIpAddress, EmailSubject, FileHashValue, FileHashType, IPAddress, UserPrincipalName, AppDisplayName, StatusCode, StatusDetails, NetworkIP, NetworkDestinationIP, NetworkSourceIP, Type
+| extend Name = tostring(split(UserPrincipalName, '@', 0)[0]), UPNSuffix = tostring(split(UserPrincipalName, '@', 1)[0])
+| extend timestamp = SigninLogs_TimeGenerated

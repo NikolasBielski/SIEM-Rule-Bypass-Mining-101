@@ -1,0 +1,8 @@
+// CH1 - Certutil (LOLBins) - BYPASSED  |  ADE3-01 Process Cloning
+// Rule intent : catch certutil.exe used to download a payload (-urlcache/-split).
+// The bug     : the rule identifies the tool by PROCESS NAME. The attacker ran a
+//               RENAMED copy of certutil (svc_update.exe) - still certutil, same
+//               download - so `Process has "certutil.exe"` never matches.
+// Try it      : this returns NOTHING on the CTF data. That empty result IS the bypass.
+ProcessCreate_CH1
+| where Process has "certutil.exe"

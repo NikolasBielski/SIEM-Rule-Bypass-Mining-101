@@ -1,0 +1,24 @@
+// hunt-ready (watchlist): Cross-tenant Access Settings Organization Deleted
+// challenge: CH2
+// original rule window: queryFrequency=P2D  queryPeriod=P2D  |  hunt widened to scan the full 730d watchlist (step/bin sizes preserved)
+// backtest: set the Logs time-picker to 'Set in query' (or Last 2 years)
+// functions used: AuditLogs_CH2
+
+AuditLogs_CH2
+| where OperationName has "Delete partner specific cross-tenant access setting"
+| mv-apply TargetResource = TargetResources on
+  (
+      where TargetResource.type =~ "Policy"
+      | extend Properties = TargetResource.modifiedProperties
+  )
+| mv-apply Property = Properties on
+  (
+      where Property.displayName =~ "tenantId"
+      | extend ExtTenantDeleted = trim('"',tostring(Property.oldValue))
+  )
+| extend InitiatingAppName = tostring(InitiatedBy.app.displayName)
+| extend InitiatingAppServicePrincipalId = tostring(InitiatedBy.app.servicePrincipalId)
+| extend InitiatingUserPrincipalName = tostring(InitiatedBy.user.userPrincipalName)
+| extend InitiatingAadUserId = tostring(InitiatedBy.user.id)
+| extend InitiatingIpAddress = tostring(iff(isnotempty(InitiatedBy.user.ipAddress), InitiatedBy.user.ipAddress, InitiatedBy.app.ipAddress))
+| extend InitiatingAccountName = tostring(split(InitiatingUserPrincipalName, "@")[0]), InitiatingAccountUPNSuffix = tostring(split(InitiatingUserPrincipalName, "@")[1])

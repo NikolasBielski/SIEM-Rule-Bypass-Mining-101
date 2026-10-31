@@ -1,0 +1,17 @@
+// hunt-ready (watchlist): Service Principal Name SPN Assigned to User Account
+// challenge: CH1
+// original rule window: queryFrequency=PT1H  queryPeriod=PT1H  |  hunt widened to scan the full 730d watchlist (step/bin sizes preserved)
+// backtest: set the Logs time-picker to 'Set in query' (or Last 2 years)
+// functions used: SecurityEvent_CH1
+
+SecurityEvent_CH1
+| where EventID == 5136 
+| parse EventData with * 'AttributeLDAPDisplayName">' AttributeLDAPDisplayName "<" *
+| parse EventData with * 'ObjectClass">' ObjectClass "<" *
+| where AttributeLDAPDisplayName == "servicePrincipalName" and  ObjectClass == "user"
+| parse EventData with * 'ObjectDN">' ObjectDN "<" *
+| parse EventData with * 'AttributeValue">' AttributeValue "<" *
+| summarize StartTime = min(TimeGenerated), EndTime = max(TimeGenerated) by Computer, SubjectAccount, ObjectDN, AttributeValue, SubjectUserName, SubjectDomainName, SubjectUserSid
+| extend HostName = tostring(split(Computer, ".")[0]), DomainIndex = toint(indexof(Computer, '.'))
+| extend HostNameDomain = iff(DomainIndex != -1, substring(Computer, DomainIndex + 1), Computer)
+| project-away DomainIndex

@@ -1,0 +1,78 @@
+// hunt-ready (watchlist): M365D Alerts Correlation to non-Microsoft Network device network activity involved in successful sign-in Activity
+// challenge: CH2+CH3
+// original rule window: queryFrequency=P1D  queryPeriod=P1D  |  hunt widened to scan the full 730d watchlist (step/bin sizes preserved)
+// backtest: set the Logs time-picker to 'Set in query' (or Last 2 years)
+// functions used: CommonSecurityLog_CH3, SigninLogs_CH2
+
+let Alert_List= dynamic([
+"Phishing link click observed in Network Traffic",
+"Phish delivered due to an IP allow policy",
+"A potentially malicious URL click was detected",
+"High Risk Sign-in Observed in Network Traffic",
+"A user clicked through to a potentially malicious URL",
+"Suspicious network connection to AitM phishing site",
+"Messages containing malicious entity not removed after delivery",
+"Email messages containing malicious URL removed after delivery",
+"Email reported by user as malware or phish",
+"Phish delivered due to an ETR override",
+"Phish not zapped because ZAP is disabled"]);
+SecurityAlert
+| where AlertName in~ (Alert_List)
+//Findling Alerts which has the URL
+| where Entities has "url"
+//extracting Entities
+| extend Entities = parse_json(Entities)
+| mv-apply Entity = Entities on
+    (
+    where Entity.Type == 'url'
+    | extend EntityUrl = tostring(Entity.Url)
+    )
+| summarize
+    Url=tostring(tolower(take_any(EntityUrl))),
+    AlertTime= min(TimeGenerated),
+    make_set(SystemAlertId, 100)
+    by ProductName, AlertName
+// matching with 3rd party network logs and 3p Alerts
+| join kind= inner (CommonSecurityLog_CH3
+    | where DeviceVendor has_any  ("Palo Alto Networks", "Fortinet", "Check Point", "Zscaler")
+    | where DeviceProduct startswith "FortiGate" or DeviceProduct startswith  "PAN" or DeviceProduct startswith  "VPN" or DeviceProduct startswith "FireWall" or DeviceProduct startswith  "NSSWeblog" or DeviceProduct startswith "URL"
+    | where DeviceAction != "Block"
+    | where isnotempty(RequestURL)
+    | project
+        3plogTime=TimeGenerated,
+        DeviceVendor,
+        DeviceProduct,
+        Activity,
+        DestinationHostName,
+        DestinationIP,
+        RequestURL=tostring(tolower(RequestURL)),
+        MaliciousIP,
+        SourceUserName=tostring(tolower(SourceUserName)),
+        IndicatorThreatType,
+        ThreatSeverity,
+        ThreatConfidence,
+        SourceUserID,
+        SourceHostName)
+    on $left.Url == $right.RequestURL
+// matching successful Login from suspicious IP
+| join kind=inner (SigninLogs_CH2
+    //filtering the Successful Login
+    | where ResultType == 0
+    | project
+        IPAddress,
+        SourceSystem,
+        SigniningTime= TimeGenerated,
+        OperationName,
+        ResultType,
+        ResultDescription,
+        AlternateSignInName,
+        AppDisplayName,
+        AuthenticationRequirement,
+        ClientAppUsed,
+        RiskState,
+        RiskLevelDuringSignIn,
+        UserPrincipalName=tostring(tolower(UserPrincipalName)),
+        Name = tostring(split(UserPrincipalName, "@")[0]),
+        UPNSuffix =tostring(split(UserPrincipalName, "@")[1]))
+    on $left.DestinationIP == $right.IPAddress and $left.SourceUserName == $right.UserPrincipalName
+| where SigniningTime between ((AlertTime - 6h) .. (AlertTime + 6h)) and 3plogTime between ((AlertTime - 6h) .. (AlertTime + 6h))

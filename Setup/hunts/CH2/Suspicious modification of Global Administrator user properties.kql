@@ -1,0 +1,40 @@
+// hunt-ready (watchlist): Suspicious modification of Global Administrator user properties
+// challenge: CH2
+// original rule window: queryFrequency=PT1H  queryPeriod=P14D  |  hunt widened to scan the full 730d watchlist (step/bin sizes preserved)
+// backtest: set the Logs time-picker to 'Set in query' (or Last 2 years)
+// functions used: AuditLogs_CH2
+
+let query_frequency = 730d;
+let query_period = 730d;
+IdentityInfo
+| where TimeGenerated > ago(730d)
+| where set_has_element(AssignedRoles, "Global Administrator")
+| distinct AccountUPN, AccountObjectId
+| join kind=inner (
+    AuditLogs_CH2
+    | where TimeGenerated > ago(730d)
+    | where OperationName=~ "Update user" and Result =~ "success"
+    // | where isnotempty(InitiatedBy["user"])
+    | mv-expand TargetResource = TargetResources
+    | where TargetResource["type"] == "User"
+    | extend AccountObjectId = tostring(TargetResource["id"])
+    | where tostring(TargetResource["modifiedProperties"]) != "[]"
+    | mv-apply modifiedProperty = TargetResource["modifiedProperties"] on (
+        summarize modifiedProperties = make_bag(
+            bag_pack(tostring(modifiedProperty["displayName"]),
+                bag_pack("oldValue", trim(@'[\"\s]+', tostring(modifiedProperty["oldValue"])),
+                    "newValue", trim(@'[\"\s]+', tostring(modifiedProperty["newValue"])))))
+    )
+    | where not(tostring(modifiedProperties["Included Updated Properties"]["newValue"]) in ("LastDirSyncTime", ""))
+    | where not(tostring(modifiedProperties["Included Updated Properties"]["newValue"]) == "StrongAuthenticationPhoneAppDetail" and isnotempty(modifiedProperties["StrongAuthenticationPhoneAppDetail"]) and tostring(array_sort_asc(extract_all(@'\"Id\"\:\"([^\"]+)\"', tostring(modifiedProperties["StrongAuthenticationPhoneAppDetail"]["newValue"])))) == tostring(array_sort_asc(extract_all(@'\"Id\"\:\"([^\"]+)\"', tostring(modifiedProperties["StrongAuthenticationPhoneAppDetail"]["oldValue"])))))
+    | extend
+        Initiator = iif(isnotempty(InitiatedBy["app"]), tostring(InitiatedBy["app"]["displayName"]), tostring(InitiatedBy["user"]["userPrincipalName"])),
+        InitiatorId = iif(isnotempty(InitiatedBy["app"]), tostring(InitiatedBy["app"]["servicePrincipalId"]), tostring(InitiatedBy["user"]["id"])),
+        IPAddress = tostring(InitiatedBy[tostring(bag_keys(InitiatedBy)[0])]["ipAddress"])
+) on AccountObjectId
+| project TimeGenerated, Category, Identity, Initiator, IPAddress, OperationName, Result, AccountUPN, InitiatedBy, AdditionalDetails, TargetResources, AccountObjectId, InitiatorId, CorrelationId
+| extend
+    InitiatorName = tostring(split(Initiator, "@")[0]),
+    InitiatorUPNSuffix = tostring(split(Initiator, "@")[1]),
+    AccountName = tostring(split(AccountUPN, "@")[0]),
+    AccountUPNSuffix = tostring(split(AccountUPN, "@")[1])

@@ -1,0 +1,42 @@
+// hunt-ready (watchlist): Identify SysAid Server web shell creation
+// challenge: CH1
+// original rule window: queryFrequency=P1D  queryPeriod=P1D  |  hunt widened to scan the full 730d watchlist (step/bin sizes preserved)
+// backtest: set the Logs time-picker to 'Set in query' (or Last 2 years)
+// functions used: SecurityEvent_CH1
+
+let timeframe = 1d;
+let time_window = 5m;
+(union isfuzzy=true
+(SecurityEvent_CH1
+| where TimeGenerated > ago(730d)
+| where EventID == 4688
+| where Process has_any ("java.exe", "javaw.exe") and CommandLine has "SysAidServer" 
+| summarize by ParentProcessName,Process, Account, Computer, CommandLine, timekey= bin(TimeGenerated, time_window), TimeGenerated, SubjectLogonId
+| join kind=inner(
+SecurityEvent_CH1
+| where TimeGenerated > ago(730d)
+| where EventID == 4663
+| where Process has_any ("java.exe", "javaw.exe")
+| where AccessMask in ('0x2','0x100', '0x10', '0x4')
+| where ObjectName endswith ".jsp" 
+| summarize by ParentProcessName, Account, Computer, ObjectName, ProcessName, timekey= bin(TimeGenerated, time_window), TimeGenerated, SubjectLogonId)
+ on timekey, Computer, SubjectLogonId
+),
+(DeviceFileEvents 
+| where InitiatingProcessFileName has_any ("java.exe", "javaw.exe")  
+| where InitiatingProcessCommandLine has "SysAidServer"  
+| where FileName endswith ".jsp" 
+| extend Account = strcat(InitiatingProcessAccountDomain, @'\', InitiatingProcessAccountName), Computer = DeviceName
+),
+(imFileEvent
+| where TimeGenerated > ago(730d)
+| where EventType == "FileCreated"
+| where ActingProcessName has_any ("java.exe", "javaw.exe") 
+| where ActingProcessCommandLine has "SysAidServer"  
+| where FilePath endswith ".jsp" 
+| extend Account = ActorUsername, Computer = DvcHostname
+)
+)
+| extend AccountName = tostring(split(Account, @'\')[1]), AccountNTDomain = tostring(split(Account, @'\')[0])
+| extend HostName = tostring(split(Computer, ".")[0]), DomainIndex = toint(indexof(Computer, '.'))
+| extend HostNameDomain = iff(DomainIndex != -1, substring(Computer, DomainIndex + 1), Computer)

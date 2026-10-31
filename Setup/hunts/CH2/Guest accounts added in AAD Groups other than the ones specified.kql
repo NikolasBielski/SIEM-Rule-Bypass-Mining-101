@@ -1,0 +1,33 @@
+// hunt-ready (watchlist): Guest accounts added in AAD Groups other than the ones specified
+// challenge: CH2
+// original rule window: queryFrequency=PT2H  queryPeriod=PT2H  |  hunt widened to scan the full 730d watchlist (step/bin sizes preserved)
+// backtest: set the Logs time-picker to 'Set in query' (or Last 2 years)
+// functions used: AuditLogs_CH2
+
+// OBJECT ID of AAD Groups can be found by navigating to Azure Active Directory then from menu on the left, select Groups and from the list shown of AAD Groups, the Second Column shows the ObjectID of each
+let GroupIDs = dynamic(["List with Custom AAD GROUP OBJECT ID 1","Custom AAD GROUP OBJECT ID 2"]);
+AuditLogs_CH2
+| where OperationName in ('Add member to group', 'Add owner to group')
+| extend InitiatedByActionUserInformation = iff(isnotempty(InitiatedBy.user.userPrincipalName), InitiatedBy.user.userPrincipalName, InitiatedBy.app.displayName)
+| extend InitiatedByIPAdress = InitiatedBy.user.ipAddress 
+// Uncomment the following line to filter events where the inviting user was a guest user
+//| where InitiatedBy has_any ("CUSTOM DOMAIN NAME#", "#EXT#")
+| mv-apply TargetResource = TargetResources on 
+  (
+      where TargetResource.type =~ "User"
+      | extend InvitedUser = trim(@'"',tostring(TargetResource.userPrincipalName)),
+               Properties = TargetResource.modifiedProperties
+  )
+| mv-apply Property = Properties on 
+  (
+      where Property.displayName =~ "Group.DisplayName"
+      | extend AADGroup = trim('"',tostring(Property.newValue))
+  )
+| where InvitedUser has_any ("CUSTOM DOMAIN NAME#", "#EXT#")
+| mv-apply Property = Properties on
+   (
+     where Property.displayName =~ "Group.ObjectID"
+     | extend AADGroupId = trim('"',tostring(Property.newValue))
+   )
+| where AADGroupId !in (GroupIDs)
+| extend Name = tostring(split(InitiatedByActionUserInformation,'@',0)[0]), UPNSuffix = tostring(split(InitiatedByActionUserInformation,'@',1)[0])

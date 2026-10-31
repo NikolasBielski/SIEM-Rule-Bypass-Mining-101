@@ -1,0 +1,21 @@
+// hunt-ready (watchlist): COM Registry Key Modified to Point to File in Color Profile Folder
+// challenge: CH1
+// original rule window: queryFrequency=P1D  queryPeriod=P1D  |  hunt widened to scan the full 730d watchlist (step/bin sizes preserved)
+// backtest: set the Logs time-picker to 'Set in query' (or Last 2 years)
+// functions used: SecurityEvent_CH1
+
+let guids = dynamic(["{ddc05a5a-351a-4e06-8eaf-54ec1bc2dcea}","{1f486a52-3cb1-48fd-8f50-b8dc300d9f9d}","{4590f811-1d3a-11d0-891f-00aa004b2e24}", "{4de225bf-cf59-4cfc-85f7-68b90f185355}", "{F56F6FDD-AA9D-4618-A949-C1B91AF43B1A}"]);
+  let mde_data = DeviceRegistryEvents
+  | where ActionType =~ "RegistryValueSet"
+  | where RegistryKey contains "HKEY_LOCAL_MACHINE\\SOFTWARE\\Classes\\CLSID"
+  | where RegistryKey has_any (guids)
+  | where RegistryValueData has "System32\\spool\\drivers\\color";
+  let event_data = SecurityEvent_CH1
+  | where EventID == 4657
+  | where ObjectName contains "HKEY_LOCAL_MACHINE\\SOFTWARE\\Classes\\CLSID"
+  | where ObjectName has_any (guids)
+  | where NewValue has "System32\\spool\\drivers\\color"
+  | extend RegistryKey = ObjectName, RegistryValueData = NewValue, DeviceName=Computer, InitiatingProcessFileName = Process, InitiatingProcessAccountName=SubjectUserName, InitiatingProcessAccountDomain = SubjectDomainName;
+  union mde_data, event_data
+  | extend HostName = tostring(split(DeviceName, ".")[0]), DomainIndex = toint(indexof(DeviceName, '.'))
+  | extend HostNameDomain = iff(DomainIndex != -1, substring(DeviceName, DomainIndex + 1), DeviceName)

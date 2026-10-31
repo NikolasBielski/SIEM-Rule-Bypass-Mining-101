@@ -1,0 +1,30 @@
+// hunt-ready (watchlist): AD FS Abnormal EKU object identifier attribute
+// challenge: CH1
+// original rule window: queryFrequency=PT1H  queryPeriod=P1D  |  hunt widened to scan the full 730d watchlist (step/bin sizes preserved)
+// backtest: set the Logs time-picker to 'Set in query' (or Last 2 years)
+// functions used: SecurityEvent_CH1
+
+// change the starttime value for a longer period of known OIDs
+let starttime = 730d;
+// change the lookback value for a longer period of lookback for suspicious/abnormal
+let lookback = 730d;
+let OIDList = SecurityEvent_CH1
+| where TimeGenerated >= ago(730d)
+| where EventSourceName == 'AD FS Auditing'
+| where EventID == 501
+| where EventData has '/eku'
+| extend OIDs = extract_all(@"<Data>([\d+\.]+)</Data>", EventData)
+| mv-expand OIDs
+| extend OID = tostring(OIDs)
+| extend OID_Length = strlen(OID)
+| project TimeGenerated, Computer, EventSourceName, EventID, OID, OID_Length, EventData
+;
+OIDList
+| where TimeGenerated >= ago(730d)
+| join kind=leftanti (
+OIDList
+| where TimeGenerated between (ago(starttime) .. ago(lookback))
+| summarize by OID
+) on OID
+| extend HostName = tostring(split(Computer, ".")[0]), DomainIndex = toint(indexof(Computer, '.'))
+| extend HostNameDomain = iff(DomainIndex != -1, substring(Computer, DomainIndex + 1), Computer)

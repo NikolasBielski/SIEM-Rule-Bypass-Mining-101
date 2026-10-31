@@ -1,0 +1,71 @@
+// hunt-ready (watchlist): Failed login attempts to Azure Portal
+// challenge: CH2
+// original rule window: queryFrequency=P1D  queryPeriod=P7D  |  hunt widened to scan the full 730d watchlist (step/bin sizes preserved)
+// backtest: set the Logs time-picker to 'Set in query' (or Last 2 years)
+// functions used: SigninLogs_CH2
+// FLAGS: table(variable) - fix the let/tableName refs by hand | also unions AADNonInteractiveUserSignInLogs (no watchlist)
+
+let timeRange = 730d;
+let lookBack = 730d;
+let threshold_Failed = 5;
+let threshold_FailedwithSingleIP = 20;
+let threshold_IPAddressCount = 2;
+let isGUID = "[0-9a-z]{8}-[0-9a-z]{4}-[0-9a-z]{4}-[0-9a-z]{4}-[0-9a-z]{12}";
+let aadFunc = (tableName:string){
+let azPortalSignins = materialize(table(tableName)
+| where TimeGenerated >= ago(730d)
+// Azure Portal only
+| where AppDisplayName =~ "Azure Portal")
+;
+let successPortalSignins = azPortalSignins
+| where TimeGenerated >= ago(730d)
+// Azure Portal only and exclude non-failure Result Types
+| where ResultType in ("0", "50125", "50140")
+// Tagging identities not resolved to friendly names
+//| extend Unresolved = iff(Identity matches regex isGUID, true, false)
+| distinct TimeGenerated, UserPrincipalName
+;
+let failPortalSignins = azPortalSignins
+| where TimeGenerated >= ago(730d)
+// Azure Portal only and exclude non-failure Result Types
+| where ResultType !in ("0", "50125", "50140", "70044", "70043")
+// Tagging identities not resolved to friendly names
+| extend Unresolved = iff(Identity matches regex isGUID, true, false)
+;
+// Verify there is no success for the same connection attempt after the fail
+let failnoSuccess = failPortalSignins | join kind= leftouter (
+   successPortalSignins
+) on UserPrincipalName
+| where TimeGenerated > TimeGenerated1 or isempty(TimeGenerated1)
+| project-away TimeGenerated1, UserPrincipalName1
+;
+// Lookup up resolved identities from last 7 days
+let identityLookup = azPortalSignins
+| where TimeGenerated >= ago(730d)
+| where not(Identity matches regex isGUID)
+| summarize by UserId, lu_UserDisplayName = UserDisplayName, lu_UserPrincipalName = UserPrincipalName;
+// Join resolved names to unresolved list from portal signins
+let unresolvedNames = failnoSuccess | where Unresolved == true | join kind= inner (
+   identityLookup
+) on UserId
+| extend UserDisplayName = lu_UserDisplayName, UserPrincipalName = lu_UserPrincipalName
+| project-away lu_UserDisplayName, lu_UserPrincipalName;
+// Join Signins that had resolved names with list of unresolved that now have a resolved name
+let u_azPortalSignins = failnoSuccess | where Unresolved == false | union unresolvedNames;
+u_azPortalSignins
+| extend DeviceDetail = todynamic(DeviceDetail), Status = todynamic(DeviceDetail), LocationDetails = todynamic(LocationDetails)
+| extend Status = strcat(ResultType, ": ", ResultDescription), OS = tostring(DeviceDetail.operatingSystem), Browser = tostring(DeviceDetail.browser)
+| extend State = tostring(LocationDetails.state), City = tostring(LocationDetails.city), Region = tostring(LocationDetails.countryOrRegion)
+| extend FullLocation = strcat(Region,'|', State, '|', City)  
+| summarize TimeGenerated = make_list(TimeGenerated,100), Status = make_list(Status,100), IPAddresses = make_list(IPAddress,100), IPAddressCount = dcount(IPAddress), FailedLogonCount = count()
+by UserPrincipalName, UserId, UserDisplayName, AppDisplayName, Browser, OS, FullLocation, Type
+| mvexpand TimeGenerated, IPAddresses, Status
+| extend TimeGenerated = todatetime(tostring(TimeGenerated)), IPAddress = tostring(IPAddresses), Status = tostring(Status)
+| project-away IPAddresses
+| summarize StartTime = min(TimeGenerated), EndTime = max(TimeGenerated) by UserPrincipalName, UserId, UserDisplayName, Status, FailedLogonCount, IPAddress, IPAddressCount, AppDisplayName, Browser, OS, FullLocation, Type
+| where (IPAddressCount >= threshold_IPAddressCount and FailedLogonCount >= threshold_Failed) or FailedLogonCount >= threshold_FailedwithSingleIP
+| extend Name = tostring(split(UserPrincipalName,'@',0)[0]), UPNSuffix = tostring(split(UserPrincipalName,'@',1)[0])
+};
+let aadSignin = aadFunc("SigninLogs_CH2");
+let aadNonInt = aadFunc("AADNonInteractiveUserSignInLogs");
+union isfuzzy=true aadSignin, aadNonInt

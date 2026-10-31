@@ -1,0 +1,33 @@
+// hunt-ready (watchlist): TI Map IP Entity to SigninLogs
+// challenge: CH2
+// original rule window: queryFrequency=PT1H  queryPeriod=P14D  |  hunt widened to scan the full 730d watchlist (step/bin sizes preserved)
+// backtest: set the Logs time-picker to 'Set in query' (or Last 2 years)
+// functions used: SigninLogs_CH2
+// FLAGS: also unions AADNonInteractiveUserSignInLogs (no watchlist)
+
+let dt_lookBack = 1h;
+let ioc_lookBack = 14d;
+let Signins = materialize(union isfuzzy=true
+  (SigninLogs_CH2
+  | where TimeGenerated >= ago(730d)),
+  (AADNonInteractiveUserSignInLogs
+  | where TimeGenerated >= ago(730d)
+  | extend Status = todynamic(Status), LocationDetails = todynamic(LocationDetails)));
+let SigninIPs = Signins | summarize make_list(IPAddress);
+let TI = materialize(ThreatIntelligenceIndicator
+  | where isnotempty(NetworkIP) or isnotempty(EmailSourceIpAddress) or isnotempty(NetworkDestinationIP) or isnotempty(NetworkSourceIP)
+  | where TimeGenerated >= ago(730d)
+  | extend TI_ipEntity = coalesce(NetworkIP, EmailSourceIpAddress, NetworkDestinationIP, NetworkSourceIP)
+  | where TI_ipEntity in (SigninIPs)
+  | summarize LatestIndicatorTime = arg_max(TimeGenerated, *) by IndicatorId
+  | where Active == true and ExpirationDateTime > now()
+  | where Description !contains_cs "State: inactive;" and Description !contains_cs "State: falsepos;");
+TI
+// using innerunique to keep perf fast and result set low, we only need one match to indicate potential malicious activity that needs to be investigated
+| join kind=innerunique (Signins) on $left.TI_ipEntity == $right.IPAddress
+| project-rename SigninLogs_TimeGenerated = TimeGenerated
+| where SigninLogs_TimeGenerated < ExpirationDateTime
+| extend StatusCode = tostring(Status.errorCode), StatusDetails = tostring(Status.additionalDetails), StatusReason = tostring(Status.failureReason)
+| summarize SigninLogs_TimeGenerated = arg_max(SigninLogs_TimeGenerated, *) by IndicatorId, IPAddress
+| project SigninLogs_TimeGenerated, Description, ActivityGroupNames, IndicatorId, ThreatType, Url, ExpirationDateTime, ConfidenceScore, TI_ipEntity, IPAddress, UserPrincipalName, AppDisplayName, StatusCode, StatusDetails, StatusReason, NetworkIP, NetworkDestinationIP, NetworkSourceIP, EmailSourceIpAddress, Type
+| extend timestamp = SigninLogs_TimeGenerated, Name = tostring(split(UserPrincipalName, '@', 0)[0]), UPNSuffix = tostring(split(UserPrincipalName, '@', 1)[0])

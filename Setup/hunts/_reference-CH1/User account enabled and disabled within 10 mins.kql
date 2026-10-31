@@ -1,0 +1,81 @@
+// hunt-ready (watchlist): User account enabled and disabled within 10 mins
+// challenge: CH1
+// original rule window: queryFrequency=P1D  queryPeriod=P1DT1H  |  hunt widened to scan the full 730d watchlist (step/bin sizes preserved)
+// backtest: set the Logs time-picker to 'Set in query' (or Last 2 years)
+// functions used: SecurityEvent_CH1
+
+let timeframe = 1d;
+let spanoftime = 10m;
+let threshold = 0;
+  (union isfuzzy=true
+    (SecurityEvent_CH1
+    | where TimeGenerated > ago(730d)
+    // A user account was enabled
+    | where EventID == 4722
+    | where AccountType =~ "User"
+    | where TargetAccount !endswith "$"
+    | project EnableTime = TimeGenerated, EnableEventID = EventID, EnableActivity = Activity, Computer = toupper(Computer), 
+    TargetAccount = tolower(TargetAccount), TargetUserName, TargetDomainName, TargetSid, 
+    AccountUsedToEnable = SubjectAccount, EnabledBySubjectUserName = SubjectUserName, EnabledBySubjectDomainName = SubjectDomainName, SIDofAccountUsedToEnable = SubjectUserSid, UserPrincipalName
+    ),
+    (
+    WindowsEvent
+    | where TimeGenerated > ago(730d)
+    // A user account was enabled
+    | where EventID == 4722
+    | extend SubjectUserSid = tostring(EventData.SubjectUserSid)
+    | extend AccountType=case(EventData.SubjectUserName endswith "$" or SubjectUserSid in ("S-1-5-18", "S-1-5-19", "S-1-5-20"), "Machine", isempty(SubjectUserSid), "", "User")
+    | where AccountType =~ "User"
+    | extend SubjectAccount = strcat(tostring(EventData.SubjectDomainName),"\\", tostring(EventData.SubjectUserName))
+    | extend SubjectDomainName = tostring(EventData.SubjectDomainName), SubjectUserName = tostring(EventData.SubjectUserName)
+    | extend TargetAccount = strcat(EventData.TargetDomainName,"\\", EventData.TargetUserName)
+    | where TargetAccount !endswith "$"
+    | extend Activity="4722 - A user account was enabled."
+    | extend TargetUserName = tostring(EventData.TargetUserName), TargetDomainName = tostring(EventData.TargetDomainName) 
+    | extend TargetSid = tostring(EventData.TargetSid)
+    | extend UserPrincipalName = tostring(EventData.UserPrincipalName)
+    | project EnableTime = TimeGenerated, EnableEventID = EventID, EnableActivity = Activity, Computer = toupper(Computer), 
+    TargetAccount = tolower(TargetAccount), TargetUserName, TargetDomainName, TargetSid, 
+    AccountUsedToEnable = SubjectAccount, EnabledBySubjectUserName = SubjectUserName, EnabledBySubjectDomainName = SubjectDomainName, SIDofAccountUsedToEnable = SubjectUserSid, UserPrincipalName
+    )
+  )
+| join kind= inner (
+  (union isfuzzy=true
+    (SecurityEvent_CH1
+    | where TimeGenerated > ago(730d)
+    // A user account was disabled
+    | where EventID == 4725
+    | where AccountType =~ "User"
+    | project DisableTime = TimeGenerated, DisableEventID = EventID, DisableActivity = Activity, Computer = toupper(Computer), 
+    TargetAccount = tolower(TargetAccount), TargetUserName, TargetDomainName, TargetSid, 
+    AccountUsedToDisable = SubjectAccount, DisabledBySubjectUserName = SubjectUserName, DisabledBySubjectDomainName = SubjectDomainName, SIDofAccountUsedToDisable = SubjectUserSid, UserPrincipalName
+    ),
+    (WindowsEvent
+    | where TimeGenerated > ago(730d)
+    // A user account was disabled
+    | where EventID == 4725
+    | extend SubjectUserSid = tostring(EventData.SubjectUserSid)
+    | extend AccountType=case(EventData.SubjectUserName endswith "$" or SubjectUserSid in ("S-1-5-18", "S-1-5-19", "S-1-5-20"), "Machine", isempty(SubjectUserSid), "", "User")
+    | where AccountType =~ "User"
+    | extend SubjectAccount = strcat(tostring(EventData.SubjectDomainName),"\\", tostring(EventData.SubjectUserName))
+    | extend SubjectDomainName = tostring(EventData.SubjectDomainName), SubjectUserName = tostring(EventData.SubjectUserName)
+    | extend TargetAccount = strcat(EventData.TargetDomainName,"\\", EventData.TargetUserName)
+    | extend TargetUserName = tostring(EventData.TargetUserName), TargetDomainName = tostring(EventData.TargetDomainName) 
+    | extend TargetSid = tostring(EventData.TargetSid)
+    | extend UserPrincipalName = tostring(EventData.UserPrincipalName)
+    | extend Activity = "4725 - A user account was disabled."
+    | project DisableTime = TimeGenerated, DisableEventID = EventID, DisableActivity = Activity, Computer = toupper(Computer), 
+    TargetAccount = tolower(TargetAccount), TargetUserName, TargetDomainName, TargetSid, 
+    AccountUsedToDisable = SubjectAccount, DisabledBySubjectUserName = SubjectUserName, DisabledBySubjectDomainName = SubjectDomainName, SIDofAccountUsedToDisable = SubjectUserSid, UserPrincipalName
+    )
+  )
+) on Computer, TargetAccount
+| where DisableTime - EnableTime < spanoftime
+| extend TimeDelta = DisableTime - EnableTime
+| where tolong(TimeDelta) >= threshold
+| project TimeDelta, EnableTime, EnableEventID, EnableActivity, Computer, TargetAccount, TargetSid, TargetUserName, TargetDomainName, UserPrincipalName, 
+AccountUsedToEnable, SIDofAccountUsedToEnable, DisableTime, DisableEventID, DisableActivity, AccountUsedToDisable, SIDofAccountUsedToDisable, 
+EnabledBySubjectUserName, EnabledBySubjectDomainName, DisabledBySubjectUserName, DisabledBySubjectDomainName
+| extend HostName = tostring(split(Computer, ".")[0]), DomainIndex = toint(indexof(Computer, '.'))
+| extend HostNameDomain = iff(DomainIndex != -1, substring(Computer, DomainIndex + 1), Computer)
+| project-away DomainIndex

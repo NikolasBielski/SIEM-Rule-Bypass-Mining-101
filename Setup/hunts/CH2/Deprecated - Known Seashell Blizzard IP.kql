@@ -1,0 +1,97 @@
+// hunt-ready (watchlist): Deprecated - Known Seashell Blizzard IP
+// challenge: CH2+CH3
+// original rule window: queryFrequency=P1D  queryPeriod=P1D  |  hunt widened to scan the full 730d watchlist (step/bin sizes preserved)
+// backtest: set the Logs time-picker to 'Set in query' (or Last 2 years)
+// functions used: CommonSecurityLog_CH3, OfficeActivity_CH2, SigninLogs_CH2, WebSession_CH3
+// FLAGS: also unions AADNonInteractiveUserSignInLogs (no watchlist) | raw Event/Sysmon - map to Event_CH1 by hand
+
+let IPList = dynamic(["154.223.45.38","185.141.207.140","185.234.73.19","216.245.210.106","51.91.48.210","46.255.230.229"]);
+(union isfuzzy=true
+(CommonSecurityLog_CH3
+| where isnotempty(SourceIP) or isnotempty(DestinationIP)
+| where SourceIP in (IPList) or DestinationIP in (IPList) or Message has_any (IPList)
+| extend IPMatch = case(SourceIP in (IPList), "SourceIP", DestinationIP in (IPList), "DestinationIP", "Message") 
+| summarize StartTimeUtc = min(TimeGenerated), EndTimeUtc = max(TimeGenerated) by SourceIP, DestinationIP, DeviceProduct, DeviceAction, Message, Protocol, SourcePort, DestinationPort, DeviceAddress, DeviceName, IPMatch
+| extend timestamp = StartTimeUtc, IPCustomEntity = case(IPMatch == "SourceIP", SourceIP, IPMatch == "DestinationIP", DestinationIP, "IP in Message Field") 
+),
+(OfficeActivity_CH2
+|extend SourceIPAddress = ClientIP, Account = UserId
+| where  SourceIPAddress in (IPList)
+| extend timestamp = TimeGenerated , IPCustomEntity = SourceIPAddress , AccountCustomEntity = Account
+),
+(_Im_Dns (response_has_any_prefix=IPList)
+| extend DestinationIPAddress = DnsResponseName,  Host = Dvc
+| extend timestamp = TimeGenerated, IPCustomEntity = SrcIpAddr, HostCustomEntity = Host, AccountCustomEntity=User
+),
+(WebSession_CH3
+| extend DestinationIPAddress = DstIpAddr,  Host = Dvc
+| extend timestamp = TimeGenerated, IPCustomEntity = SrcIpAddr, HostCustomEntity = Host
+),
+(_Im_NetworkSession (srcipaddr_has_any_prefix=IPList)
+| extend DestinationIPAddress = DstIpAddr,  Host = Dvc
+| extend timestamp = TimeGenerated, IPCustomEntity = SrcIpAddr, HostCustomEntity = Host
+),
+(_Im_NetworkSession (dstipaddr_has_any_prefix=IPList)
+| extend DestinationIPAddress = DstIpAddr,  Host = Dvc
+| extend timestamp = TimeGenerated, IPCustomEntity = SrcIpAddr, HostCustomEntity = Host
+),
+(SigninLogs_CH2
+| where isnotempty(IPAddress)
+| where IPAddress in (IPList)
+| extend timestamp = TimeGenerated, AccountCustomEntity = UserPrincipalName, IPCustomEntity = IPAddress
+),
+(AADNonInteractiveUserSignInLogs
+| where isnotempty(IPAddress)
+| where IPAddress in (IPList)
+| extend timestamp = TimeGenerated, AccountCustomEntity = UserPrincipalName, IPCustomEntity = IPAddress
+),
+(W3CIISLog 
+| where isnotempty(cIP)
+| where cIP in (IPList)
+| extend timestamp = TimeGenerated, IPCustomEntity = cIP, HostCustomEntity = Computer, AccountCustomEntity = csUserName
+),
+(AzureActivity 
+| where isnotempty(CallerIpAddress)
+| where CallerIpAddress in (IPList)
+| extend timestamp = TimeGenerated, IPCustomEntity = CallerIpAddress, AccountCustomEntity = Caller
+),
+(
+AWSCloudTrail
+| where isnotempty(SourceIpAddress)
+| where SourceIpAddress in (IPList)
+| extend timestamp = TimeGenerated, IPCustomEntity = SourceIpAddress, AccountCustomEntity = UserIdentityUserName
+),
+(
+AzureDiagnostics
+| where ResourceType == "AZUREFIREWALLS"
+| where Category == "AzureFirewallApplicationRule"
+| parse msg_s with Protocol 'request from ' SourceHost ':' SourcePort 'to ' DestinationHost ':' DestinationPort '. Action:' Action
+| where isnotempty(DestinationHost)
+| where DestinationHost has_any (IPList)  
+| extend DestinationIP = DestinationHost 
+| extend IPCustomEntity = SourceHost
+),
+(
+AZFWApplicationRule
+| where isnotempty(Fqdn)
+| where Fqdn has_any (IPList)  
+| extend DestinationIP = Fqdn 
+| extend IPCustomEntity = SourceIp
+),
+(AZFWNetworkRule
+| where isnotempty(DestinationIp)
+| where DestinationIp  has_any (IPList)  
+| extend DestinationIP = DestinationIp 
+| extend IPCustomEntity = SourceIp
+),
+(Event
+| where Source == "Microsoft-Windows-Sysmon"
+| where EventID == 3
+| extend EvData = parse_xml(EventData)
+| extend EventDetail = EvData.DataItem.EventData.Data
+| extend SourceIP = EventDetail.[9].["#text"], DestinationIP = EventDetail.[14].["#text"]
+| where SourceIP in (IPList) or DestinationIP in (IPList) 
+| extend IPMatch = case( SourceIP in (IPList), "SourceIP", DestinationIP in (IPList), "DestinationIP", "None") 
+| extend timestamp = TimeGenerated, AccountCustomEntity = UserName, HostCustomEntity = Computer , IPCustomEntity = case(IPMatch == "SourceIP", SourceIP, IPMatch == "DestinationIP", DestinationIP, "None")
+)
+)

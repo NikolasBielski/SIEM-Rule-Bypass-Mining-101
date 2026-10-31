@@ -1,0 +1,119 @@
+// =====================================================================
+// CTF watchlist wrapper functions
+// Save EACH block below as a Log Analytics function (Logs > Save > Save as
+// function) using the "functionAlias" shown. They return watchlist rows typed
+// and named like the real table, so exported rules run unchanged once you
+// swap the table token for the function alias (see the hunts/ folder).
+// =====================================================================
+
+// --- functionAlias: SecurityEvent_CH1  (native SecurityEvent 4688, v2 event) ---
+// Columns/derived fields match the real SecurityEvent table (Account, SubjectAccount, Activity, Channel, ...).
+_GetWatchlist('c1-securityevent')
+| where TimeGenerated >= ago(730d)
+| extend TimeGenerated = todatetime(TimeGenerated), EventID = toint(EventID)
+| extend Account = strcat(SubjectDomainName, "\\", SubjectUserName),
+         SubjectAccount = strcat(SubjectDomainName, "\\", SubjectUserName),
+         TargetAccount = strcat(TargetDomainName, "\\", TargetUserName),
+         AccountType = iff(SubjectUserName endswith "$", "Machine", "User"),
+         Process = tostring(split(NewProcessName, "\\")[-1]),
+         Activity = "4688 - A new process has been created.",
+         Channel = "Security", EventSourceName = "Microsoft-Windows-Security-Auditing",
+         Version = 2, SourceSystem = "OpsManager", Type = "SecurityEvent"
+| project TimeGenerated, Computer, EventID, Activity, Channel, EventSourceName, SourceSystem,
+          Account, AccountType, SubjectAccount, SubjectUserSid, SubjectUserName, SubjectDomainName, SubjectLogonId,
+          NewProcessId, NewProcessName, Process, TokenElevationType, ProcessId, CommandLine,
+          TargetAccount, TargetUserSid, TargetUserName, TargetDomainName, TargetLogonId,
+          ParentProcessName, MandatoryLabel, Version, Type
+
+// --- functionAlias: ProcessCreate_CH1  (ASIM imProcessCreate shape, from SecurityEvent) ---
+_GetWatchlist('c1-securityevent')
+| where TimeGenerated >= ago(730d)
+| extend TimeGenerated = todatetime(TimeGenerated)
+| extend User = strcat(SubjectDomainName, "\\", SubjectUserName)
+| extend Process = NewProcessName, TargetProcessName = NewProcessName,
+         ActingProcessName = ParentProcessName, Dvc = Computer, DvcHostname = Computer
+| project TimeGenerated, Process, TargetProcessName, CommandLine, ActingProcessName, Dvc, DvcHostname, User
+
+// --- functionAlias: Event_CH1  (Windows `Event` table carrying Sysmon 1/3/7/11) ---
+// Rebuilds the raw EventData XML exactly as the real Event table stores it (fields in Sysmon order), so
+// exported rules that `parse EventData with * 'Image">' Image "<" * ...` run unchanged.
+let esc = (s: string) { replace_string(replace_string(replace_string(s, "&", "&amp;"), "<", "&lt;"), ">", "&gt;") };
+let d = (n: string, v: string) { iff(isempty(v), "", strcat('<Data Name="', n, '">', esc(v), '</Data>')) };
+_GetWatchlist('c1-sysmon')
+| where TimeGenerated >= ago(730d)
+| extend TimeGenerated = todatetime(TimeGenerated), EventID = toint(EventID)
+| extend Body = case(
+    EventID == 1, strcat(d("RuleName", "-"), d("UtcTime", UtcTime), d("ProcessGuid", ProcessGuid), d("ProcessId", ProcessId),
+        d("Image", Image), d("FileVersion", FileVersion), d("Description", Description), d("Product", Product),
+        d("Company", Company), d("OriginalFileName", OriginalFileName), d("CommandLine", CommandLine),
+        d("CurrentDirectory", CurrentDirectory), d("User", User), d("LogonGuid", LogonGuid), d("LogonId", LogonId),
+        d("TerminalSessionId", TerminalSessionId), d("IntegrityLevel", IntegrityLevel), d("Hashes", Hashes),
+        d("ParentProcessGuid", ParentProcessGuid), d("ParentProcessId", ParentProcessId), d("ParentImage", ParentImage),
+        d("ParentCommandLine", ParentCommandLine), d("ParentUser", ParentUser)),
+    EventID == 3, strcat(d("RuleName", "-"), d("UtcTime", UtcTime), d("ProcessGuid", ProcessGuid), d("ProcessId", ProcessId),
+        d("Image", Image), d("User", User), d("Protocol", Protocol), d("Initiated", Initiated),
+        d("SourceIsIpv6", SourceIsIpv6), d("SourceIp", SourceIp), d("SourceHostname", "-"), d("SourcePort", SourcePort),
+        d("SourcePortName", SourcePortName), d("DestinationIsIpv6", DestinationIsIpv6), d("DestinationIp", DestinationIp),
+        d("DestinationHostname", DestinationHostname), d("DestinationPort", DestinationPort),
+        d("DestinationPortName", DestinationPortName)),
+    EventID == 7, strcat(d("RuleName", "-"), d("UtcTime", UtcTime), d("ProcessGuid", ProcessGuid), d("ProcessId", ProcessId),
+        d("Image", Image), d("ImageLoaded", ImageLoaded), d("FileVersion", FileVersion), d("Description", Description),
+        d("Product", Product), d("Company", Company), d("OriginalFileName", OriginalFileName), d("Hashes", Hashes),
+        d("Signed", Signed), d("Signature", Signature), d("SignatureStatus", SignatureStatus), d("User", User)),
+    EventID == 11, strcat(d("RuleName", "-"), d("UtcTime", UtcTime), d("ProcessGuid", ProcessGuid), d("ProcessId", ProcessId),
+        d("Image", Image), d("TargetFilename", TargetFilename), d("CreationUtcTime", CreationUtcTime), d("User", User)),
+    "")
+| extend EventData = strcat('<DataItem Type="System.XmlData" time="', tostring(TimeGenerated),
+        '" sourceHealthServiceId="00000000-0000-0000-0000-000000000000"><EventData xmlns="http://schemas.microsoft.com/win/2004/08/events/event">',
+        Body, '</EventData></DataItem>'),
+         RenderedDescription = strcat(case(EventID == 1, "Process Create:", EventID == 3, "Network connection detected:", EventID == 7, "Image loaded:", EventID == 11, "File created:", "Sysmon event:"), " Image: ", Image),
+         Source = "Microsoft-Windows-Sysmon", EventLog = "Microsoft-Windows-Sysmon/Operational",
+         EventLevel = 4, EventLevelName = "Information", EventCategory = EventID,
+         UserName = @"NT AUTHORITY\SYSTEM", ParameterXml = "", SourceSystem = "OpsManager", Type = "Event"
+| project TimeGenerated, Source, EventLog, Computer, EventLevel, EventLevelName, EventID, EventCategory,
+          UserName, RenderedDescription, EventData, ParameterXml, SourceSystem, Type
+
+// --- functionAlias: SigninLogs_CH2  (native SigninLogs) ---
+_GetWatchlist('c2-signinlogs')
+| where TimeGenerated >= ago(730d)
+| extend TimeGenerated = todatetime(TimeGenerated), LocationDetails = todynamic(LocationDetails)
+| project TimeGenerated, UserPrincipalName, UserId, UserDisplayName, IPAddress, ResultType,
+          ResultDescription, AppDisplayName, ClientAppUsed, Location, LocationDetails, Identity, Type
+
+// --- functionAlias: AuditLogs_CH2  (native AuditLogs - nested dynamics rebuilt) ---
+_GetWatchlist('c2-auditlogs')
+| where TimeGenerated >= ago(730d)
+| extend TimeGenerated = todatetime(TimeGenerated)
+| extend InitiatedBy = pack("user", pack("userPrincipalName", InitiatingUserPrincipalName, "ipAddress", IPAddress))
+| extend TargetResources = pack_array(pack(
+        "userPrincipalName", TargetUserPrincipalName, "displayName", TargetResourceName, "type", "User",
+        "modifiedProperties", iif(isnotempty(RoleName),
+            pack_array(pack("displayName","Role.DisplayName","newValue",tostring(RoleName))), dynamic([]))))
+| project TimeGenerated, OperationName, Result, Category, InitiatedBy, TargetResources,
+          InitiatingUserPrincipalName, TargetUserPrincipalName, RoleName, IPAddress
+
+// --- functionAlias: OfficeActivity_CH2  (native OfficeActivity) ---
+_GetWatchlist('c2-officeactivity')
+| where TimeGenerated >= ago(730d)
+| extend TimeGenerated = todatetime(TimeGenerated)
+| project TimeGenerated, Operation, UserId, UserAgent, ClientIP, Site_Url, SourceFileName, OfficeWorkload
+
+// --- functionAlias: CommonSecurityLog_CH3  (native CommonSecurityLog) ---
+_GetWatchlist('c3-commonsecuritylog')
+| where TimeGenerated >= ago(730d)
+| extend TimeGenerated = todatetime(TimeGenerated), DestinationPort = toint(DestinationPort),
+         SentBytes = tolong(SentBytes), ReceivedBytes = tolong(ReceivedBytes)
+| project TimeGenerated, DeviceVendor, DeviceProduct, SourceIP, DestinationIP, DestinationPort,
+          SentBytes, ReceivedBytes, Activity, DeviceAction
+
+// --- functionAlias: DnsEvents_CH3  (native DnsEvents) ---
+_GetWatchlist('c3-dnsevents')
+| where TimeGenerated >= ago(730d)
+| extend TimeGenerated = todatetime(TimeGenerated), ResultCode = toint(ResultCode)
+| project TimeGenerated, Computer, ClientIP, Name, QueryType, ResultCode, IPAddresses
+
+// --- functionAlias: WebSession_CH3  (ASIM _Im_WebSession shape) ---
+_GetWatchlist('c3-webssession')
+| where TimeGenerated >= ago(730d)
+| extend TimeGenerated = todatetime(TimeGenerated), HttpStatusCode = toint(HttpStatusCode)
+| project TimeGenerated, SrcIpAddr, DstIpAddr, Url, UrlOriginal, HttpUserAgent, HttpStatusCode, EventProduct

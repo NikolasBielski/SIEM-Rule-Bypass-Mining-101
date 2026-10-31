@@ -1,0 +1,35 @@
+title: Sentinel Certutil Download-Abuse (name + required URL) - ADE3-01 + ADE2-04 BUGGY
+id: a1b2c3d4-0002-4a01-8b01-000000000002
+status: experimental
+description: |
+  Sigma port of Azure Sentinel's Certutil-Download-Abuse analytic rule.
+references:
+  - https://github.com/Azure/Azure-Sentinel/blob/f6cc4352c34b84d781735967808cfc953376e7f2/Solutions/Endpoint%20Threat%20Protection%20Essentials/Analytic%20Rules/Certutil-Download-Abuse.yaml
+author: sentinel_busa
+date: 2026-10-19
+logsource:
+  product: windows
+  category: process_creation
+detection:
+  name:
+    Image|endswith: '\certutil.exe'
+  action:
+    CommandLine|contains:
+      - '-urlcache'
+      - '-verifyctl'
+      - '-decode'
+      - '-decodehex'
+  url:
+    CommandLine|contains:
+      - 'http://'
+      - 'https://'
+      - 'ftp://'
+  condition: name and action and url
+falsepositives:
+  - Legitimate certutil network retrieval
+level: medium
+tags:
+  - attack.defense_evasion
+  - attack.t1105
+  - attack.t1140
+details: 'Image: %Image% | OriginalFileName: %OriginalFileName% | Cmd: %CommandLine% | Parent: %ParentImage%'

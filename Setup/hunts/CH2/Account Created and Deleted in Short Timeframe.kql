@@ -1,0 +1,37 @@
+// hunt-ready (watchlist): Account Created and Deleted in Short Timeframe
+// challenge: CH2
+// original rule window: queryFrequency=PT1H  queryPeriod=P1D  |  hunt widened to scan the full 730d watchlist (step/bin sizes preserved)
+// backtest: set the Logs time-picker to 'Set in query' (or Last 2 years)
+// functions used: AuditLogs_CH2
+
+let queryfrequency = 730d;
+let queryperiod = 730d;
+AuditLogs_CH2
+| where TimeGenerated > ago(730d)
+| where OperationName =~ "Delete user"
+//extend UserPrincipalName = tostring(TargetResources[0].userPrincipalName)
+| mv-apply TargetResource = TargetResources on 
+  (
+      where TargetResource.type == "User"
+      | extend UserPrincipalName = extract(@'([a-f0-9]{32})?(.*)', 2, tostring(TargetResource.userPrincipalName))
+  )
+| extend DeletedByUser = tostring(InitiatedBy.user.userPrincipalName), DeletedByIPAddress = tostring(InitiatedBy.user.ipAddress)
+| extend DeletedByApp = tostring(InitiatedBy.app.displayName)
+| project Deletion_TimeGenerated = TimeGenerated, UserPrincipalName, DeletedByUser, DeletedByIPAddress, DeletedByApp, Deletion_AdditionalDetails = AdditionalDetails, Deletion_InitiatedBy = InitiatedBy, Deletion_TargetResources = TargetResources
+| join kind=inner (
+    AuditLogs_CH2
+    | where TimeGenerated > ago(730d)
+    | where OperationName =~ "Add user"      
+    | mv-apply TargetResource = TargetResources on 
+      (
+          where TargetResource.type == "User"
+          | extend UserPrincipalName = trim(@'"',tostring(TargetResource.userPrincipalName))
+      )
+    | project-rename Creation_TimeGenerated = TimeGenerated
+) on UserPrincipalName
+| extend TimeDelta = Deletion_TimeGenerated - Creation_TimeGenerated
+| where  TimeDelta between (time(0s) .. queryperiod)
+| extend CreatedByUser = tostring(InitiatedBy.user.userPrincipalName), CreatedByIPAddress = tostring(InitiatedBy.user.ipAddress)
+| extend CreatedByApp = tostring(InitiatedBy.app.displayName)
+| project Creation_TimeGenerated, Deletion_TimeGenerated, TimeDelta, UserPrincipalName, DeletedByUser, DeletedByIPAddress, DeletedByApp, CreatedByUser, CreatedByIPAddress, CreatedByApp, Creation_AdditionalDetails = AdditionalDetails, Creation_InitiatedBy = InitiatedBy, Creation_TargetResources = TargetResources, Deletion_AdditionalDetails, Deletion_InitiatedBy, Deletion_TargetResources
+| extend timestamp = Deletion_TimeGenerated, Name = tostring(split(UserPrincipalName,'@',0)[0]), UPNSuffix = tostring(split(UserPrincipalName,'@',1)[0])

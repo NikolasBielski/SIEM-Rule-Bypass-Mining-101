@@ -1,0 +1,42 @@
+// hunt-ready (watchlist): MFA Rejected by User
+// challenge: CH2
+// original rule window: queryFrequency=PT1H  queryPeriod=PT1H  |  hunt widened to scan the full 730d watchlist (step/bin sizes preserved)
+// backtest: set the Logs time-picker to 'Set in query' (or Last 2 years)
+// functions used: SigninLogs_CH2
+
+let riskScoreCutoff = 3; //Adjust this score threshold based on volume of results. Activities identified as the most abnormal receive the highest scores (on a scale of 0-10)
+SigninLogs_CH2
+| where ResultType == 500121
+| extend additionalDetails_ = tostring(Status.additionalDetails)
+| extend UserPrincipalName = tolower(UserPrincipalName)
+| where additionalDetails_ =~ "MFA denied; user declined the authentication" or additionalDetails_ has "fraud"
+| summarize StartTime = min(TimeGenerated), EndTIme = max(TimeGenerated) by UserPrincipalName, UserId, AADTenantId, FailedIPAddress = IPAddress
+| extend Name = tostring(split(UserPrincipalName,'@',0)[0]), UPNSuffix = tostring(split(UserPrincipalName,'@',1)[0])
+| join kind=leftouter (
+    IdentityInfo
+    | summarize LatestReportTime = arg_max(TimeGenerated, *) by AccountUPN
+    | project AccountUPN, Tags, JobTitle, GroupMembership, AssignedRoles, UserType, IsAccountEnabled
+    | summarize
+        Tags = make_set(Tags, 1000),
+        GroupMembership = make_set(GroupMembership, 1000),
+        AssignedRoles = make_set(AssignedRoles, 1000),
+        UserType = make_set(UserType, 1000),
+        UserAccountControl = make_set(UserType, 1000)
+    by AccountUPN
+    | extend UserPrincipalName=tolower(AccountUPN)
+) on UserPrincipalName
+//Below it will be joined with BehaviorAnalytics table to the Failed IP Addresses
+| join kind=leftouter (
+    BehaviorAnalytics
+    | where ActivityType in ("FailedLogOn", "LogOn")
+    | where isnotempty(SourceIPAddress)
+    | project UsersInsights, DevicesInsights, ActivityInsights, InvestigationPriority, SourceIPAddress, UserName
+    | project-rename FailedIPAddress = SourceIPAddress, Name = UserName
+    | summarize
+      MaxInvestigationScore = max(InvestigationPriority)  // Only retrieve maximum Investigation Property score for both FailedIP and User
+    by FailedIPAddress, Name)
+on FailedIPAddress, Name  // Joining on both IP and User so as to only return context associated with same user
+| extend UEBARiskScore = MaxInvestigationScore
+| project-away *1 // removing duplicate columns post outer join from output
+| where  UEBARiskScore > riskScoreCutoff
+| sort by UEBARiskScore desc

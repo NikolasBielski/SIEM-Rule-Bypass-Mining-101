@@ -1,0 +1,52 @@
+// hunt-ready (watchlist): Multiple RDP connections from Single System
+// challenge: CH1
+// original rule window: queryFrequency=P1D  queryPeriod=P8D  |  hunt widened to scan the full 730d watchlist (step/bin sizes preserved)
+// backtest: set the Logs time-picker to 'Set in query' (or Last 2 years)
+// functions used: SecurityEvent_CH1
+
+let endtime = 1d;
+let starttime = 730d;
+let threshold = 2.0;
+(union isfuzzy=true
+(SecurityEvent_CH1
+| where TimeGenerated >= ago(730d)
+| where EventID == 4624 and LogonType == 10
+| summarize StartTime = min(TimeGenerated), EndTime = max(TimeGenerated), ComputerCountToday = dcount(Computer), ComputerSet = makeset(Computer), ProcessSet = makeset(ProcessName)
+by Account = tolower(Account), IpAddress, AccountType, Activity, LogonTypeName),
+(WindowsEvent
+| where TimeGenerated >= ago(730d)
+| where EventID == 4624
+| extend LogonType = tostring(EventData.LogonType)
+| where  LogonType == 10
+| extend ProcessName = tostring(EventData.ProcessName)
+| extend Account = strcat(tostring(EventData.TargetDomainName),"\\", tostring(EventData.TargetUserName))
+| extend IpAddress = tostring(EventData.IpAddress)
+| extend TargetUserSid = tostring(EventData.TargetUserSid)
+| extend AccountType=case(Account endswith "$" or TargetUserSid in ("S-1-5-18", "S-1-5-19", "S-1-5-20"), "Machine", isempty(TargetUserSid), "", "User")
+| extend Activity="4624 - An account was successfully logged on."
+| extend LogonTypeName="10 - RemoteInteractive"
+| summarize StartTime = min(TimeGenerated), EndTime = max(TimeGenerated), ComputerCountToday = dcount(Computer), ComputerSet = makeset(Computer), ProcessSet = makeset(ProcessName)
+by Account = tolower(Account), IpAddress, AccountType, Activity, LogonTypeName)
+)
+| join kind=inner (
+(union isfuzzy=true
+(SecurityEvent_CH1
+| where TimeGenerated >= ago(730d) and TimeGenerated < ago(endtime)
+| where EventID == 4624 and LogonType == 10
+| summarize ComputerCountPrev7Days = dcount(Computer) by Account = tolower(Account), IpAddress
+),
+( WindowsEvent
+| where TimeGenerated >= ago(730d) and TimeGenerated < ago(endtime)
+| where EventID == 4624  and EventData has ("10")
+| extend LogonType = toint(EventData.LogonType)
+| where  LogonType == 10
+| extend Account = strcat(tostring(EventData.TargetDomainName),"\\", tostring(EventData.TargetUserName))
+| extend IpAddress = tostring(EventData.IpAddress)
+| summarize ComputerCountPrev7Days = dcount(Computer) by Account = tolower(Account), IpAddress)
+)
+) on Account, IpAddress
+| extend Ratio = iff(isempty(ComputerCountPrev7Days), toreal(ComputerCountToday), ComputerCountToday / (ComputerCountPrev7Days * 1.0))
+// Where the ratio of today to previous 7 days is more than double.
+| where Ratio > threshold
+| project StartTime, EndTime, Account, IpAddress, ComputerSet, ComputerCountToday, ComputerCountPrev7Days, Ratio, AccountType, Activity, LogonTypeName, ProcessSet
+| extend AccountName = tostring(split(Account, @"\")[1]), AccountNTDomain = tostring(split(Account, @"\")[0])

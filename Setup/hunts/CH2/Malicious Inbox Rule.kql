@@ -1,0 +1,24 @@
+// hunt-ready (watchlist): Malicious Inbox Rule
+// challenge: CH2
+// original rule window: queryFrequency=P1D  queryPeriod=P1D  |  hunt widened to scan the full 730d watchlist (step/bin sizes preserved)
+// backtest: set the Logs time-picker to 'Set in query' (or Last 2 years)
+// functions used: OfficeActivity_CH2
+
+let Keywords = dynamic(["helpdesk", " alert", " suspicious", "fake", "malicious", "phishing", "spam", "do not click", "do not open", "hijacked", "Fatal"]);
+OfficeActivity_CH2
+| where OfficeWorkload =~ "Exchange" 
+| where Operation =~ "New-InboxRule" and (ResultStatus =~ "True" or ResultStatus =~ "Succeeded")
+| where Parameters has "Deleted Items" or Parameters has "Junk Email"  or Parameters has "DeleteMessage"
+| extend Events=todynamic(Parameters)
+| parse Events  with * "SubjectContainsWords" SubjectContainsWords '}'*
+| parse Events  with * "BodyContainsWords" BodyContainsWords '}'*
+| parse Events  with * "SubjectOrBodyContainsWords" SubjectOrBodyContainsWords '}'*
+| where SubjectContainsWords has_any (Keywords)
+ or BodyContainsWords has_any (Keywords)
+ or SubjectOrBodyContainsWords has_any (Keywords)
+| extend ClientIPAddress = case( ClientIP has ".", tostring(split(ClientIP,":")[0]), ClientIP has "[", tostring(trim_start(@'[[]',tostring(split(ClientIP,"]")[0]))), ClientIP )
+| extend Keyword = iff(isnotempty(SubjectContainsWords), SubjectContainsWords, (iff(isnotempty(BodyContainsWords),BodyContainsWords,SubjectOrBodyContainsWords )))
+| extend RuleDetail = case(OfficeObjectId contains '/' , tostring(split(OfficeObjectId, '/')[-1]) , tostring(split(OfficeObjectId, '\\')[-1]))
+| summarize count(), StartTimeUtc = min(TimeGenerated), EndTimeUtc = max(TimeGenerated) by  Operation, UserId, ClientIPAddress, ResultStatus, Keyword, OriginatingServer, OfficeObjectId, RuleDetail
+| extend AccountName = tostring(split(UserId, "@")[0]), AccountUPNSuffix = tostring(split(UserId, "@")[1])
+| extend OriginatingServerName = tostring(split(OriginatingServer, " ")[0])

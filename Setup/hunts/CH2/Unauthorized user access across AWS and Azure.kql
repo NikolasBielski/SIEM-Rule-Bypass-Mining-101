@@ -1,0 +1,78 @@
+// hunt-ready (watchlist): Unauthorized user access across AWS and Azure
+// challenge: CH2
+// original rule window: queryFrequency=P1D  queryPeriod=P1D  |  hunt widened to scan the full 730d watchlist (step/bin sizes preserved)
+// backtest: set the Logs time-picker to 'Set in query' (or Last 2 years)
+// functions used: SigninLogs_CH2
+
+// Define a variable 'AwsAlert' to collect Unauthorized user access alerts from AWS GuardDuty table
+let AwsAlert = materialize (
+    AWSGuardDuty
+    | where ActivityType has_any ("UnauthorizedAccess:IAMUser/TorIPCaller", "UnauthorizedAccess:IAMUser/MaliciousIPCaller.Custom", 
+    "UnauthorizedAccess:IAMUser/InstanceCredentialExfiltration.OutsideAWS", "UnauthorizedAccess:IAMUser/InstanceCredentialExfiltration.InsideAWS",
+    "UnauthorizedAccess:IAMUser/ConsoleLoginSuccess.B","UnauthorizedAccess:IAMUser/MaliciousIPCaller")
+    | extend
+        AWSAlertId = Id, 
+        AWSAlertTitle = Title,
+        AWSAlertDescription = Description,
+        AWSresourceType = tostring(parse_json(ResourceDetails).resourceType),
+        AWSNetworkEntity = tostring(parse_json(ServiceDetails).action.awsApiCallAction.remoteIpDetails.ipAddressV4),
+        AWSAlertUserNameEntity = tostring(parse_json(ResourceDetails).accessKeyDetails.userName),
+        InstanceType = tostring(parse_json(ResourceDetails).instanceDetails.instanceType),
+        AWSTargetingService = parse_json(ServiceDetails).additionalInfo.apiCalls,
+        AWSAlertTime = TimeCreated,
+        AWSAlertLink= tostring(strcat('https://us-east-1.console.aws.amazon.com/guardduty/home?region=us-east-1#/findings?macros=current&fId=',Id)),
+        Severity = 
+  case (
+    Severity >= 7.0, "High",
+    Severity between (4.0 .. 6.9), "Medium",
+    Severity between (1.0 .. 3.9), "Low",
+    "Unknown")
+    | mv-apply AIPCall = AWSTargetingService on 
+        ( 
+        where AIPCall has "name"    
+        | extend APICallName = tostring(AIPCall.name), APICallCount = tostring(AIPCall["count"])
+        ) 
+    | distinct
+        AWSAlertTime,
+        ActivityType,
+        Severity,
+        AWSAlertId,
+        AWSAlertTitle,
+        AWSAlertDescription,
+        AWSAlertLink,
+        Arn,
+        AWSresourceType,
+        AWSNetworkEntity,
+        AWSAlertUserNameEntity,
+        InstanceType,
+        APICallName,
+        APICallCount      
+    );
+    // Define a variable 'Azure_sigin' to collect Azure portal Signing activity from SigninLogs_CH2 Table
+    let Azure_sigin = materialize (SigninLogs_CH2
+        | where AppDisplayName == "Azure Portal"
+        | where isnotempty(OriginalRequestId)
+        | summarize 
+            totalAzureLoginEventId = dcount(OriginalRequestId), 
+            AzureFailedEventsCount = dcountif(OriginalRequestId, ResultType != 0), 
+            AzureSuccessfulEventsCount = dcountif(OriginalRequestId, ResultType == 0),
+            AzureSetOfFailedEvents = makeset(iff(ResultType != 0, OriginalRequestId, ""), 5), 
+            AzureSetOfSuccessfulEvents = makeset(iff(ResultType == 0, OriginalRequestId, ""), 5) 
+        by 
+            IPAddress, 
+            UserPrincipalName, 
+            bin(TimeGenerated, 1min), 
+            UserAgent,
+            ConditionalAccessStatus,
+            OperationName,
+            RiskDetail,
+            AuthenticationRequirement,
+            ClientAppUsed 
+        // Extracting the name and UPN suffix from UserPrincipalName
+        | extend
+            Name = tostring(split(UserPrincipalName, "@")[0]),
+            UPNSuffix = tostring(split(UserPrincipalName, "@")[1])
+    );
+    // Join 'AwsAlert' and 'Azure_sigin' on the AWS Network Entity and Azure IP Address
+    AwsAlert
+    | join kind=inner Azure_sigin on $left.AWSNetworkEntity == $right.IPAddress

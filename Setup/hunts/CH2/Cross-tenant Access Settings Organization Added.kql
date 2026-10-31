@@ -1,0 +1,27 @@
+// hunt-ready (watchlist): Cross-tenant Access Settings Organization Added
+// challenge: CH2
+// original rule window: queryFrequency=P2D  queryPeriod=P2D  |  hunt widened to scan the full 730d watchlist (step/bin sizes preserved)
+// backtest: set the Logs time-picker to 'Set in query' (or Last 2 years)
+// functions used: AuditLogs_CH2
+
+// Tenants IDs can be found by navigating to Azure Active Directory then from menu on the left, select External Identities, then from menu on the left, select Cross-tenant access settings and from the list shown of Tenants
+let ExpectedTenantIDs = dynamic(["List of expected tenant IDs","Tenant ID 2"]);
+AuditLogs_CH2
+| where OperationName has "Add a partner to cross-tenant access setting"
+| mv-apply TargetResource = TargetResources on
+  (
+      where TargetResource.type =~ "Policy"
+      | extend Properties = TargetResource.modifiedProperties
+  )
+| mv-apply Property = Properties on
+  (
+      where Property.displayName =~ "tenantId"
+      | extend ExtTenantIDAdded = trim('"',tostring(Property.newValue))
+  )
+| where ExtTenantIDAdded !in (ExpectedTenantIDs)
+| extend InitiatingAppName = tostring(InitiatedBy.app.displayName)
+| extend InitiatingAppServicePrincipalId = tostring(InitiatedBy.app.servicePrincipalId)
+| extend InitiatingUserPrincipalName = tostring(InitiatedBy.user.userPrincipalName)
+| extend InitiatingAadUserId = tostring(InitiatedBy.user.id)
+| extend InitiatingIpAddress = tostring(iff(isnotempty(InitiatedBy.user.ipAddress), InitiatedBy.user.ipAddress, InitiatedBy.app.ipAddress))
+| extend InitiatingAccountName = tostring(split(InitiatingUserPrincipalName, "@")[0]), InitiatingAccountUPNSuffix = tostring(split(InitiatingUserPrincipalName, "@")[1])

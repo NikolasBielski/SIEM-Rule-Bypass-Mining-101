@@ -1,0 +1,76 @@
+// hunt-ready (watchlist): Potential Build Process Compromise
+// challenge: CH1
+// original rule window: queryFrequency=P1D  queryPeriod=P1D  |  hunt widened to scan the full 730d watchlist (step/bin sizes preserved)
+// backtest: set the Logs time-picker to 'Set in query' (or Last 2 years)
+// functions used: SecurityEvent_CH1
+
+// How far back to look for events from
+let timeframe = 1d;
+// How close together build events and file modifications should occur to alert (make this smaller to reduce FPs)
+let time_window = 5m;
+// Edit this to include build processes used
+let build_processes = dynamic(["MSBuild.exe", "dotnet.exe", "VBCSCompiler.exe"]);
+// Include any processes that you want to allow to edit files during/around the build process
+let allow_list = dynamic([""]);
+(union isfuzzy=true
+(SecurityEvent_CH1
+| where TimeGenerated > ago(730d)
+// Look for build process starts
+| where EventID == 4688
+| where Process has_any (build_processes)
+| summarize by BuildParentProcess=ParentProcessName, BuildProcess=Process, BuildAccount = Account, Computer, BuildCommand=CommandLine, timekey= bin(TimeGenerated, time_window), BuildProcessTime=TimeGenerated
+| join kind=inner(
+SecurityEvent_CH1
+| where TimeGenerated > ago(730d)
+// Look for file modifications to code file
+| where EventID == 4663
+| where Process !in (allow_list)
+// Look for code files, edit this to include file extensions used in build.
+| where ObjectName endswith ".cs" or ObjectName endswith ".cpp"
+// 0x6 and 0x4 for file append, 0x100 for file replacements
+| where AccessMask == "0x6"  or AccessMask == "0x4" or AccessMask == "0X100"
+| summarize by FileEditParentProcess=ParentProcessName, FileEditAccount = Account, Computer, FileEdited=ObjectName, FileEditProcess=ProcessName, timekey= bin(TimeGenerated, time_window), FileEditTime=TimeGenerated)
+// join where build processes and file modifications seen at same time on same host
+on timekey, Computer
+// Limit to only where the file edit happens after the build process starts
+| where BuildProcessTime <= FileEditTime
+| summarize make_set(FileEdited), make_set(FileEditProcess), make_set(FileEditAccount) by timekey, Computer, BuildParentProcess, BuildProcess
+),
+(WindowsEvent
+| where TimeGenerated > ago(730d)
+// Look for build process starts
+| where EventID == 4688 and EventData has_any (build_processes)
+| extend NewProcessName = tostring(EventData.NewProcessName)
+| extend Process=tostring(split(NewProcessName, '\\')[-1])
+| where Process has_any (build_processes)
+| extend ParentProcessName = tostring(EventData.ParentProcessName)
+| extend Account =  strcat(tostring(EventData.SubjectDomainName),"\\", tostring(EventData.SubjectUserName))
+| extend CommandLine = tostring(EventData.CommandLine) 
+| summarize by BuildParentProcess=ParentProcessName, BuildProcess=Process, BuildAccount = Account, Computer, BuildCommand=CommandLine, timekey= bin(TimeGenerated, time_window), BuildProcessTime=TimeGenerated
+| join kind=inner(
+WindowsEvent
+| where TimeGenerated > ago(730d)
+// Look for file modifications to code file
+| where EventID == 4663 and EventData has_any ("0x6", "0x4", "0X100") and EventData has_any (".cs", ".cpp")
+| extend NewProcessName = tostring(EventData.NewProcessName)
+| extend Process=tostring(split(NewProcessName, '\\')[-1])
+| where Process !in (allow_list)
+// Look for code files, edit this to include file extensions used in build.
+| extend ObjectName = tostring(EventData.ObjectName)
+| where ObjectName endswith ".cs" or ObjectName endswith ".cpp"
+// 0x6 and 0x4 for file append, 0x100 for file replacements
+| extend AccessMask = tostring(EventData.AccessMask)  
+| where AccessMask == "0x6"  or AccessMask == "0x4" or AccessMask == "0X100"
+| extend ParentProcessName = tostring(EventData.ParentProcessName)
+| extend Account =  strcat(tostring(EventData.SubjectDomainName),"\\", tostring(EventData.SubjectUserName))
+| extend ProcessName = tostring(EventData.ProcessName)
+| summarize by FileEditParentProcess=ParentProcessName, FileEditAccount = Account, Computer, FileEdited=ObjectName, FileEditProcess=ProcessName, timekey= bin(TimeGenerated, time_window), FileEditTime=TimeGenerated)
+// join where build processes and file modifications seen at same time on same host
+on timekey, Computer
+// Limit to only where the file edit happens after the build process starts
+| where BuildProcessTime <= FileEditTime
+| summarize make_set(FileEdited), make_set(FileEditProcess), make_set(FileEditAccount) by timekey, Computer, BuildParentProcess, BuildProcess
+))
+| extend HostName = tostring(split(Computer, ".")[0]), DomainIndex = toint(indexof(Computer, '.'))
+| extend HostNameDomain = iff(DomainIndex != -1, substring(Computer, DomainIndex + 1), Computer)
+| project-away DomainIndex

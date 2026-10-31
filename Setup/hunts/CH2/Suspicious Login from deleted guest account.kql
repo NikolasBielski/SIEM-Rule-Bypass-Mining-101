@@ -1,0 +1,32 @@
+// hunt-ready (watchlist): Suspicious Login from deleted guest account
+// challenge: CH2
+// original rule window: queryFrequency=PT1H  queryPeriod=P1D  |  hunt widened to scan the full 730d watchlist (step/bin sizes preserved)
+// backtest: set the Logs time-picker to 'Set in query' (or Last 2 years)
+// functions used: AuditLogs_CH2, SigninLogs_CH2
+
+let query_frequency = 730d;
+let query_period = 730d;
+AuditLogs_CH2
+| where TimeGenerated > ago(730d)
+| where Category =~ "UserManagement" and OperationName =~ "Delete user"
+| mv-expand TargetResource = TargetResources
+| where TargetResource["type"] == "User" and TargetResource["userPrincipalName"] has "#EXT#"
+| extend ParsedDeletedUserPrincipalName = extract(@"^[0-9a-f]{32}([^\#]+)\#EXT\#", 1, tostring(TargetResource["userPrincipalName"]))
+| extend
+    Initiator = iif(isnotempty(InitiatedBy["app"]), tostring(InitiatedBy["app"]["displayName"]), tostring(InitiatedBy["user"]["userPrincipalName"])),
+    InitiatorId = iif(isnotempty(InitiatedBy["app"]), tostring(InitiatedBy["app"]["servicePrincipalId"]), tostring(InitiatedBy["user"]["id"])),
+    Delete_IPAddress = tostring(InitiatedBy[tostring(bag_keys(InitiatedBy)[0])]["ipAddress"])
+| project Delete_TimeGenerated = TimeGenerated, Category, Identity, Initiator, Delete_IPAddress, OperationName, Result, ParsedDeletedUserPrincipalName, InitiatedBy, AdditionalDetails, TargetResources, InitiatorId, CorrelationId
+| join kind=inner (
+    SigninLogs_CH2
+    | where TimeGenerated > ago(730d)
+    | where ResultType == 0
+    | summarize take_any(*) by UserPrincipalName
+    | extend ParsedUserPrincipalName = translate("@", "_", UserPrincipalName)
+    | project SigninLogs_TimeGenerated = TimeGenerated, UserPrincipalName, UserDisplayName, ResultType, ResultDescription, IPAddress, LocationDetails, AppDisplayName, ResourceDisplayName, ClientAppUsed, UserAgent, DeviceDetail, UserId, UserType, OriginalRequestId, ParsedUserPrincipalName
+    ) on $left.ParsedDeletedUserPrincipalName == $right.ParsedUserPrincipalName
+| where SigninLogs_TimeGenerated > Delete_TimeGenerated
+| project-away ParsedDeletedUserPrincipalName, ParsedUserPrincipalName
+| extend
+    AccountName = tostring(split(UserPrincipalName, "@")[0]),
+    AccountUPNSuffix = tostring(split(UserPrincipalName, "@")[1])

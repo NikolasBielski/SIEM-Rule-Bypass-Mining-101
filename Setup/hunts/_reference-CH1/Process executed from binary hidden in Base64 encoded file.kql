@@ -1,0 +1,30 @@
+// hunt-ready (watchlist): Process executed from binary hidden in Base64 encoded file
+// challenge: CH1
+// original rule window: queryFrequency=P1D  queryPeriod=P1D  |  hunt widened to scan the full 730d watchlist (step/bin sizes preserved)
+// backtest: set the Logs time-picker to 'Set in query' (or Last 2 years)
+// functions used: SecurityEvent_CH1
+
+let ProcessCreationEvents=(union isfuzzy=true
+(SecurityEvent_CH1
+| where EventID==4688
+| where isnotempty(CommandLine)
+| project TimeGenerated, Computer, Account = SubjectUserName, AccountDomain = SubjectDomainName, FileName = Process, CommandLine, ParentProcessName
+),
+(WindowsEvent
+| where EventID==4688
+| where EventData has_any (".decode('base64')", "base64 --decode", ".decode64(" )
+| extend CommandLine = tostring(EventData.CommandLine)
+| where isnotempty(CommandLine)
+| extend SubjectUserName = tostring(EventData.SubjectUserName)
+| extend SubjectDomainName = tostring(EventData.SubjectDomainName)
+| extend NewProcessName = tostring(EventData.NewProcessName)
+| extend FileName=tostring(split(NewProcessName, '\\')[-1])
+| extend ParentProcessName = tostring(EventData.ParentProcessName)
+| project TimeGenerated, Computer, Account = SubjectUserName, AccountDomain = SubjectDomainName, CommandLine, ParentProcessName
+));
+ProcessCreationEvents 
+| where CommandLine contains ".decode('base64')"
+        or CommandLine contains "base64 --decode"
+        or CommandLine contains ".decode64(" 
+| summarize StartTimeUtc = min(TimeGenerated), EndTimeUtc = max(TimeGenerated), CountToday = count() by Computer, Account, AccountDomain, FileName, CommandLine, ParentProcessName
+| extend HostName = iif(Computer has '.',substring(Computer,0,indexof(Computer,'.')),Computer) , DnsDomain = iif(Computer has '.',substring(Computer,indexof(Computer,'.')+1),'')

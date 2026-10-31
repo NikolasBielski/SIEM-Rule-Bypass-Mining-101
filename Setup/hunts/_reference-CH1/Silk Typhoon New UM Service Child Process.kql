@@ -1,0 +1,41 @@
+// hunt-ready (watchlist): Silk Typhoon New UM Service Child Process
+// challenge: CH1
+// original rule window: queryFrequency=P1D  queryPeriod=P14D  |  hunt widened to scan the full 730d watchlist (step/bin sizes preserved)
+// backtest: set the Logs time-picker to 'Set in query' (or Last 2 years)
+// functions used: SecurityEvent_CH1
+
+let lookback = 730d;
+let timeframe = 1d;
+(union isfuzzy=true
+(SecurityEvent_CH1
+| where TimeGenerated > ago(730d) and TimeGenerated < ago(timeframe)
+| where EventID == 4688
+| where ParentProcessName has_any ("umworkerprocess.exe", "UMService.exe")
+| join kind=rightanti (
+SecurityEvent_CH1
+| where TimeGenerated > ago(730d)
+| where ParentProcessName has_any ("umworkerprocess.exe", "UMService.exe")
+| where EventID == 4688) on NewProcessName
+),
+(WindowsEvent
+| where TimeGenerated > ago(730d) and TimeGenerated < ago(timeframe)
+| where EventID == 4688 and EventData has_any ("umworkerprocess.exe", "UMService.exe")
+| extend ParentProcessName = tostring(EventData.ParentProcessName)
+| where ParentProcessName has_any ("umworkerprocess.exe", "UMService.exe")
+| extend NewProcessName = tostring(EventData.NewProcessName)
+| extend Account = strcat(tostring(EventData.SubjectDomainName),"\\", tostring(EventData.SubjectUserName))
+| extend IpAddress = tostring(EventData.IpAddress)
+| join kind=rightanti (
+WindowsEvent
+| where TimeGenerated > ago(730d)
+| where EventID == 4688  and EventData has_any ("umworkerprocess.exe", "UMService.exe")
+| extend ParentProcessName = tostring(EventData.ParentProcessName)
+| where ParentProcessName has_any ("umworkerprocess.exe", "UMService.exe")
+| extend NewProcessName = tostring(EventData.NewProcessName)
+| extend Account = strcat(tostring(EventData.SubjectDomainName),"\\", tostring(EventData.SubjectUserName))
+| extend IpAddress = tostring(EventData.IpAddress)) on NewProcessName
+| extend HostName = tostring(split(Computer, ".")[0]), DomainIndex = toint(indexof(Computer, '.'))
+| extend HostNameDomain = iff(DomainIndex != -1, substring(Computer, DomainIndex + 1), Computer)
+| extend SubjectUserName = tostring(EventData.SubjectUserName), SubjectDomainName = tostring(EventData.SubjectDomainName)
+| project-away DomainIndex
+))

@@ -1,0 +1,55 @@
+// hunt-ready (watchlist): Malformed user agent
+// challenge: CH2
+// original rule window: queryFrequency=P1D  queryPeriod=P1D  |  hunt widened to scan the full 730d watchlist (step/bin sizes preserved)
+// backtest: set the Logs time-picker to 'Set in query' (or Last 2 years)
+// functions used: OfficeActivity_CH2, SigninLogs_CH2
+// FLAGS: also unions AADNonInteractiveUserSignInLogs (no watchlist)
+
+(union isfuzzy=true
+(OfficeActivity_CH2 | where UserAgent != ""),
+(OfficeActivity_CH2
+| where RecordType in ("AzureActiveDirectory", "AzureActiveDirectoryStsLogon")
+| extend OperationName = Operation
+| parse ExtendedProperties with * 'User-Agent\\":\\"' UserAgent2 '\\' *
+| parse ExtendedProperties with * 'UserAgent",      "Value": "' UserAgent1 '"' *
+| where isnotempty(UserAgent1) or isnotempty(UserAgent2)
+| extend UserAgent = iff( RecordType == 'AzureActiveDirectoryStsLogon', UserAgent1, UserAgent2)
+| summarize StartTime = min(TimeGenerated), EndTime = max(TimeGenerated) by UserAgent, SourceIP = ClientIP, Account = UserId, Type, RecordType, Operation
+),
+(AzureDiagnostics
+| where ResourceType =~ "APPLICATIONGATEWAYS"
+| where OperationName =~ "ApplicationGatewayAccess"
+| extend ClientIP = columnifexists("clientIP_s", "None"), UserAgent = columnifexists("userAgent_s", "None")
+| where UserAgent != '-'
+| summarize StartTime = min(TimeGenerated), EndTime = max(TimeGenerated) by UserAgent, SourceIP = ClientIP,  requestUri_s, httpMethod_s, host_s, requestQuery_s, Type
+),
+(
+W3CIISLog
+| where isnotempty(csUserAgent)
+| summarize StartTime = min(TimeGenerated), EndTime = max(TimeGenerated) by UserAgent = csUserAgent, SourceIP = cIP, Account = csUserName, Type, sSiteName, csMethod, csUriStem
+),
+(
+AWSCloudTrail
+| where isnotempty(UserAgent)
+| summarize StartTime = min(TimeGenerated), EndTime = max(TimeGenerated) by UserAgent, SourceIP = SourceIpAddress, Account = UserIdentityUserName, Type, EventSource, EventName
+),
+(SigninLogs_CH2
+| where isnotempty(UserAgent)
+| summarize StartTime = min(TimeGenerated), EndTime = max(TimeGenerated) by UserAgent, SourceIP = IPAddress, Account = UserPrincipalName, Type, OperationName, tostring(LocationDetails), tostring(DeviceDetail), AppDisplayName, ClientAppUsed
+),
+(AADNonInteractiveUserSignInLogs
+| where isnotempty(UserAgent)
+| summarize StartTime = min(TimeGenerated), EndTime = max(TimeGenerated) by UserAgent, SourceIP = IPAddress, Account = UserPrincipalName, Type, OperationName, tostring(LocationDetails), tostring(DeviceDetail), AppDisplayName, ClientAppUsed
+)
+)
+// Likely artefact of hardcoding
+| where UserAgent startswith "User" or UserAgent startswith '\"'
+// Incorrect casing
+or (UserAgent startswith "Mozilla" and not(UserAgent contains_cs "Mozilla"))
+// Incorrect casing
+or UserAgent contains_cs  "(Compatible;"
+// Missing MSIE version
+or UserAgent matches regex @"MSIE\s?;"
+// Incorrect spacing around MSIE version
+or UserAgent matches regex  @"MSIE(?:\d|.{1,5}?\d\s;)"
+| extend AccountName = split(Account, "@")[0], UPNSuffix = split(Account, "@")[1]

@@ -1,0 +1,52 @@
+// hunt-ready (watchlist): Zinc Actor IOCs files - October 2022
+// challenge: CH1
+// original rule window: queryFrequency=PT6H  queryPeriod=PT6H  |  hunt widened to scan the full 730d watchlist (step/bin sizes preserved)
+// backtest: set the Logs time-picker to 'Set in query' (or Last 2 years)
+// functions used: SecurityEvent_CH1
+// FLAGS: externaldata - external URL, not a table | raw Event/Sysmon - map to Event_CH1 by hand
+
+let iocs = externaldata(DateAdded:string,IoC:string,Type:string) [@"https://raw.githubusercontent.com/Azure/Azure-Sentinel/master/Sample%20Data/Feeds/ZincOctober2022IOCs.csv"] with (format="csv", ignoreFirstRecord=True);
+let file_path = (iocs | where Type =~ "filepath" | project IoC);
+let commandline = (iocs | where Type =~ "commandline" | project IoC);
+(union isfuzzy=true 
+(DeviceNetworkEvents
+| where  InitiatingProcessFolderPath has_any (file_path) or InitiatingProcessCommandLine has_any (commandline)
+| project TimeGenerated, ActionType, DeviceId, DeviceName, InitiatingProcessAccountDomain, InitiatingProcessAccountName, InitiatingProcessCommandLine, InitiatingProcessFolderPath, InitiatingProcessId, InitiatingProcessParentFileName, InitiatingProcessFileName, RemoteIP, RemoteUrl, LocalIP, Type
+| extend timestamp = TimeGenerated, HostEntity = DeviceName
+),
+(Event
+| where Source =~ "Microsoft-Windows-Sysmon"
+| where EventID == 1
+| extend EvData = parse_xml(EventData)
+| extend EventDetail = EvData.DataItem.EventData.Data
+| extend Image = EventDetail.[4].["#text"],  CommandLine = EventDetail.[10].["#text"]
+| where Image has_any (file_path)  or   CommandLine has_any (commandline)
+| project TimeGenerated, EventDetail, UserName, Computer, Type, Source, CommandLine, Image
+| extend Type = strcat(Type, ": ", Source)
+| extend timestamp = TimeGenerated, HostEntity = Computer , AccountEntity = UserName, ProcessEntity = tostring(split(Image, '\\', -1)[-1])
+),  
+(DeviceProcessEvents
+| where  ( InitiatingProcessCommandLine has_any (file_path)) or ( InitiatingProcessCommandLine has_any (commandline))  or (InitiatingProcessFolderPath has_any (file_path)) or (InitiatingProcessFolderPath has_any (commandline)) or (FolderPath  has_any (file_path)) or (FolderPath has_any (commandline))
+| project TimeGenerated, ActionType, DeviceId, DeviceName, InitiatingProcessAccountDomain, InitiatingProcessAccountName, InitiatingProcessCommandLine, InitiatingProcessFolderPath, InitiatingProcessId, InitiatingProcessParentFileName, InitiatingProcessFileName, InitiatingProcessSHA256, FolderPath, Type
+| extend timestamp = TimeGenerated, HostEntity = DeviceName , AccountEntity = InitiatingProcessAccountName, ProcessEntity = InitiatingProcessFileName
+),
+(DeviceFileEvents
+| where  (InitiatingProcessFolderPath has_any (file_path)) or (InitiatingProcessFolderPath has_any (commandline)) or (FolderPath  has_any (file_path)) or (FolderPath  has_any (commandline)) or ( InitiatingProcessCommandLine has_any (commandline)) or ( InitiatingProcessCommandLine has_any (file_path))
+| project TimeGenerated, ActionType, DeviceId, DeviceName, InitiatingProcessAccountDomain, InitiatingProcessAccountName, InitiatingProcessCommandLine, InitiatingProcessFolderPath, InitiatingProcessId, InitiatingProcessParentFileName, InitiatingProcessFileName, RequestAccountName, RequestSourceIP, InitiatingProcessSHA256, FolderPath, Type
+| extend timestamp = TimeGenerated, HostEntity = DeviceName , AccountEntity = RequestAccountName, ProcessEntity = InitiatingProcessFileName, AlgorithmEntity = "SHA256", FileHashEntity = InitiatingProcessSHA256
+),
+(DeviceEvents
+| where  ( InitiatingProcessCommandLine has_any (file_path)) or ( InitiatingProcessCommandLine has_any (commandline)) or (InitiatingProcessFolderPath has_any (file_path)) or (InitiatingProcessFolderPath has_any (commandline)) or (FolderPath  has_any (file_path)) or (FolderPath has_any (commandline))
+| project TimeGenerated, ActionType, DeviceId, DeviceName, InitiatingProcessAccountDomain, InitiatingProcessAccountName, InitiatingProcessCommandLine, InitiatingProcessFolderPath, InitiatingProcessId, InitiatingProcessParentFileName, InitiatingProcessFileName, FolderPath, Type
+| extend CommandLine = InitiatingProcessCommandLine
+| extend timestamp = TimeGenerated, HostEntity = DeviceName , AccountEntity = InitiatingProcessAccountName, ProcessEntity = InitiatingProcessFileName
+),
+(SecurityEvent_CH1
+| where EventID == 4688
+| where ( CommandLine has_any (file_path)) or ( CommandLine has_any (commandline))  or (NewProcessName has_any (file_path)) or (NewProcessName has_any (commandline)) or (ParentProcessName has_any (file_path)) or (ParentProcessName has_any (commandline))
+| project TimeGenerated, Computer, NewProcessName, ParentProcessName, Account, NewProcessId, Type
+| extend timestamp = TimeGenerated, HostEntity = Computer , AccountEntity = Account, ProcessEntity = NewProcessName
+)
+)
+| extend HostName = tostring(split(HostEntity, '.', 0)[0]), DnsDomain = tostring(strcat_array(array_slice(split(HostEntity, '.'), 1, -1), '.'))
+| extend Name = tostring(split(AccountEntity, '@', 0)[0]), UPNSuffix = tostring(split(AccountEntity, '@', 1)[0])

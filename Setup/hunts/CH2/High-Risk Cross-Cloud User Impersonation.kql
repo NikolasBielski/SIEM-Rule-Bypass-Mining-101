@@ -1,0 +1,43 @@
+// hunt-ready (watchlist): High-Risk Cross-Cloud User Impersonation
+// challenge: CH2
+// original rule window: queryFrequency=P1D  queryPeriod=P1D  |  hunt widened to scan the full 730d watchlist (step/bin sizes preserved)
+// backtest: set the Logs time-picker to 'Set in query' (or Last 2 years)
+// functions used: SigninLogs_CH2
+
+// Retrieve Azure AD SigninLogs_CH2 within the last day
+SigninLogs_CH2 
+// Filter for specific AppDisplayNames, ResultType, and Risk Levels
+| where AppDisplayName in ("Azure Portal", "ADFS Trust", "Microsoft Azure PowerShell")
+    and RiskLevelAggregated == "high"
+    and RiskLevelDuringSignIn == "high"
+// Summarize AppDisplayNames by relevant attributes
+| extend Result = iff(ResultType == 0, "Successful Signin", "Failed Signin")
+| summarize make_set(AppDisplayName)
+    by
+    IPAddress,
+    signInTime=TimeGenerated,
+    UserPrincipalName,
+    RiskEventTypes,
+    RiskEventTypes_V2
+// Inner join with AWS CloudTrail events
+| join kind=inner (
+    AWSCloudTrail
+    | where isempty(ErrorMessage)
+    | where EventSource in ("iam.amazonaws.com", "identitystore.amazonaws.com", "workmail.amazonaws.com", "workdocs.amazonaws.com")
+    // List of AWS event names
+    | where EventName in~ ("CreateRole", "DeleteRole", "CreateUser", "CreateAccessKey", "DeleteAccessKey", "CreateGroup", "AddUserToGroup", "ChangePassword", "DeleteGroup", "DeleteUser", "RemoveUserFromGroup", "CreateVirtualMFADevice", "DeleteLoginProfile", "CreateOrganization", "SetDefaultMailDomain", "SetMailUserDetails", "CreateMailUser", "ResetPassword", "RegisterToWorkMail", "DisableMailUsers", "EnableMailUsers", "DeleteServiceSpecificCredential", "CreateServiceSpecificCredential", "UpdateAccountEmailAddress", "DeleteGroupPolicy", "UploadServerCertificate")  
+    // Summarize relevant attributes
+    | summarize make_set(RequestParameters), make_set(ResponseElements)
+        by
+        SourceIpAddress,
+        UserIdentityArn,
+        UserIdentityType,
+        EventName,
+        EventTime=TimeGenerated,
+        EventSource
+    )
+    on $left.IPAddress == $right.SourceIpAddress  
+// Calculate time difference in hours between AWS event and Azure sign-in
+| extend timedef = datetime_diff("hour", EventTime, signInTime)
+// Filter for time differences within a certain range
+| where timedef between (0 .. 8)

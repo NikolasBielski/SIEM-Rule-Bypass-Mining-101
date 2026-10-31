@@ -1,0 +1,25 @@
+// hunt-ready (watchlist): End-user consent stopped due to risk-based consent
+// challenge: CH2
+// original rule window: queryFrequency=P1D  queryPeriod=P1D  |  hunt widened to scan the full 730d watchlist (step/bin sizes preserved)
+// backtest: set the Logs time-picker to 'Set in query' (or Last 2 years)
+// functions used: AuditLogs_CH2
+
+AuditLogs_CH2
+  | where OperationName has "Consent to application"
+  | where Result =~ "failure"
+  | extend InitiatingUserPrincipalName = tostring(InitiatedBy.user.userPrincipalName)
+  | extend InitiatingAadUserId = tostring(InitiatedBy.user.id)
+  | extend InitiatingIPAddress = tostring(InitiatedBy.user.ipAddress)
+  | extend userAgent = iif(AdditionalDetails[0].key == "User-Agent", tostring(AdditionalDetails[0].value), tostring(AdditionalDetails[1].value))
+  | where isnotempty(TargetResources)
+  | extend TargetAppName = tostring(TargetResources[0].displayName)
+  | extend TargetAppId = tostring(TargetResources[0].id)
+  | mv-expand TargetResources[0].modifiedProperties
+  | extend TargetResources_0_modifiedProperties = columnifexists("TargetResources_0_modifiedProperties", '')
+  | where isnotempty(TargetResources_0_modifiedProperties)
+  | where TargetResources_0_modifiedProperties.displayName =~ "MethodExecutionResult."
+  | extend TargetPropertyDisplayName = tostring(TargetResources_0_modifiedProperties.displayName)
+  | extend FailureReason = tostring(parse_json(tostring(TargetResources_0_modifiedProperties.newValue)))
+  | where FailureReason contains "Risky"
+  | extend InitiatingAccountName = tostring(split(InitiatingUserPrincipalName, "@")[0]), InitiatingAccountUPNSuffix = tostring(split(InitiatingUserPrincipalName, "@")[1])
+  | project-reorder TimeGenerated, OperationName, Result, TargetAppName, TargetAppId, FailureReason, InitiatingUserPrincipalName, InitiatingAadUserId, InitiatingIPAddress, userAgent

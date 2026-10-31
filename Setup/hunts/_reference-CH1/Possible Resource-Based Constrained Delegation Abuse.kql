@@ -1,0 +1,16 @@
+// hunt-ready (watchlist): Possible Resource-Based Constrained Delegation Abuse
+// challenge: CH1
+// original rule window: queryFrequency=PT1H  queryPeriod=PT1H  |  hunt widened to scan the full 730d watchlist (step/bin sizes preserved)
+// backtest: set the Logs time-picker to 'Set in query' (or Last 2 years)
+// functions used: SecurityEvent_CH1
+
+SecurityEvent_CH1
+| where EventID == 5136 
+| parse EventData with * 'ObjectClass">' ObjectClass "<" *
+| parse EventData with * 'AttributeLDAPDisplayName">' AttributeLDAPDisplayName "<" *
+| where ObjectClass == "computer" and AttributeLDAPDisplayName == "msDS-AllowedToActOnBehalfOfOtherIdentity"
+| parse EventData with * 'ObjectDN">' ObjectDN "<" *
+| summarize StartTime = min(TimeGenerated), EndTime = max(TimeGenerated) by Computer, SubjectAccount, SubjectUserName, SubjectDomainName, SubjectUserSid, SubjectLogonId, ObjectDN, AttributeLDAPDisplayName
+| extend HostName = tostring(split(Computer, ".")[0]), DomainIndex = toint(indexof(Computer, '.'))
+| extend HostNameDomain = iff(DomainIndex != -1, substring(Computer, DomainIndex + 1), Computer)
+| project-away DomainIndex

@@ -1,0 +1,23 @@
+// hunt-ready (watchlist): Sdelete deployed via GPO and run recursively
+// challenge: CH1
+// original rule window: queryFrequency=P1D  queryPeriod=P1D  |  hunt widened to scan the full 730d watchlist (step/bin sizes preserved)
+// backtest: set the Logs time-picker to 'Set in query' (or Last 2 years)
+// functions used: SecurityEvent_CH1
+
+SecurityEvent_CH1
+  | where EventID == 4688
+  | where Process =~ "svchost.exe"
+  | where CommandLine has "-k GPSvcGroup" or CommandLine has "-s gpsvc"
+  | extend timekey = bin(TimeGenerated, 1m)
+  | project timekey, NewProcessId, Computer
+  | join kind=inner (SecurityEvent_CH1
+  | where EventID == 4688
+  | where Process =~ "sdelete.exe" or CommandLine has "sdelete"
+  | where ParentProcessName endswith "svchost.exe"
+  | where CommandLine has_all ("-s", "-r")
+  | extend newProcess = Process
+  | extend timekey = bin(TimeGenerated, 1m)
+  ) on $left.NewProcessId == $right.ProcessId, timekey, Computer
+  | extend HostName = tostring(split(Computer, ".")[0]), DomainIndex = toint(indexof(Computer, '.'))
+  | extend HostNameDomain = iff(DomainIndex != -1, substring(Computer, DomainIndex + 1), Computer)
+  | extend AccountName = tostring(split(TargetAccount, @'\')[1]), AccountNTDomain = tostring(split(TargetAccount, @'\')[0])

@@ -1,0 +1,21 @@
+// hunt-ready (watchlist): Addition of a Temporary Access Pass to a Privileged Account
+// challenge: CH2
+// original rule window: queryFrequency=P1D  queryPeriod=P1D  |  hunt widened to scan the full 730d watchlist (step/bin sizes preserved)
+// backtest: set the Logs time-picker to 'Set in query' (or Last 2 years)
+// functions used: AuditLogs_CH2
+
+let admin_users = (IdentityInfo
+  | summarize arg_max(TimeGenerated, *) by AccountUPN
+  | where AssignedRoles contains "admin"
+  | summarize by tolower(AccountUPN));
+  AuditLogs_CH2
+  | where OperationName =~ "Admin registered security info"
+  | where ResultReason =~ "Admin registered temporary access pass method for user"
+  | extend TargetUserPrincipalName = tostring(TargetResources[0].userPrincipalName)
+  | where tolower(TargetUserPrincipalName) in (admin_users)
+  | extend TargetAadUserId = tostring(TargetResources[0].id)
+  | extend InitiatingUserPrincipalName = tostring(InitiatedBy.user.userPrincipalName)
+  | extend InitiatingAadUserId = tostring(InitiatedBy.user.id)
+  | extend InitiatingIPAddress = tostring(InitiatedBy.user.ipAddress)
+  | extend TargetAccountName = tostring(split(TargetUserPrincipalName, "@")[0]), TargetAccountUPNSuffix = tostring(split(TargetUserPrincipalName, "@")[1])
+  | extend InitiatingAccountName = tostring(split(InitiatingUserPrincipalName, "@")[0]), InitiatingAccountUPNSuffix = tostring(split(InitiatingUserPrincipalName, "@")[1])

@@ -1,0 +1,41 @@
+// hunt-ready (watchlist): Accessed files shared by temporary external user
+// challenge: CH2
+// original rule window: queryFrequency=PT1H  queryPeriod=PT1H  |  hunt widened to scan the full 730d watchlist (step/bin sizes preserved)
+// backtest: set the Logs time-picker to 'Set in query' (or Last 2 years)
+// functions used: OfficeActivity_CH2
+
+let fileAccessThrehold = 10;
+OfficeActivity_CH2
+| where OfficeWorkload =~ "MicrosoftTeams"
+| where Operation =~ "MemberAdded"
+| extend MemberAdded = tostring(parse_json(Members)[0].UPN)
+| where MemberAdded contains ("#EXT#")
+| project TimeAdded=TimeGenerated, Operation, MemberAdded, UserWhoAdded = UserId, TeamName
+| join kind = inner (
+  OfficeActivity_CH2
+  | where OfficeWorkload =~ "MicrosoftTeams"
+  | where Operation =~ "MemberRemoved"
+  | extend MemberAdded = tostring(parse_json(Members)[0].UPN)
+  | where MemberAdded contains ("#EXT#")
+  | project TimeDeleted=TimeGenerated, Operation, MemberAdded, UserWhoDeleted = UserId, TeamName
+  ) on MemberAdded
+| where TimeDeleted > TimeAdded
+| join kind=inner (
+  OfficeActivity_CH2
+  | where RecordType == "SharePointFileOperation"
+  | where SourceRelativeUrl has "Microsoft Teams Chat Files"
+  | where Operation == "FileUploaded"
+  | extend MemberAdded = UserId
+  | join kind = inner (
+      OfficeActivity_CH2
+      | where RecordType == "SharePointFileOperation"
+      | where Operation  == "FileAccessed"
+      | where SourceRelativeUrl has "Microsoft Teams Chat Files"
+      | summarize FileAccessCount = count() by OfficeObjectId
+      | where FileAccessCount > fileAccessThrehold
+      ) on $left.OfficeObjectId == $right.OfficeObjectId
+  )on MemberAdded
+| project-away MemberAdded1, MemberAdded2, OfficeObjectId1, Operation1, Operation2, TeamName1, TeamName2
+| extend MemberAddedAccountName = tostring(split(MemberAdded, "@")[0]), MemberAddedAccountUPNSuffix = tostring(split(MemberAdded, "@")[1])
+| extend UserWhoAddedAccountName = tostring(split(UserWhoAdded, "@")[0]), UserWhoAddedAccountUPNSuffix = tostring(split(UserWhoAdded, "@")[1])
+| extend UserWhoDeletedAccountName = tostring(split(UserWhoDeleted, "@")[0]), UserWhoDeletedAccountUPNSuffix = tostring(split(UserWhoDeleted, "@")[1])

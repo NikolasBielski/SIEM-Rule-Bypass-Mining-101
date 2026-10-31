@@ -1,0 +1,25 @@
+// hunt-ready (watchlist): Changes to Application Ownership
+// challenge: CH2
+// original rule window: queryFrequency=PT2H  queryPeriod=PT2H  |  hunt widened to scan the full 730d watchlist (step/bin sizes preserved)
+// backtest: set the Logs time-picker to 'Set in query' (or Last 2 years)
+// functions used: AuditLogs_CH2
+
+AuditLogs_CH2
+  | where Category =~ "ApplicationManagement"
+  | where OperationName =~ "Add owner to application"
+  | extend InitiatingAppName = tostring(InitiatedBy.app.displayName)
+  | extend InitiatingAppServicePrincipalId = tostring(InitiatedBy.app.servicePrincipalId)
+  | extend InitiatingUserPrincipalName = tostring(InitiatedBy.user.userPrincipalName)
+  | extend InitiatingAadUserId = tostring(InitiatedBy.user.id)
+  | extend InitiatingIPAddress = tostring(InitiatedBy.user.ipAddress)
+  | extend TargetUserPrincipalName = TargetResources[0].userPrincipalName
+  | extend TargetAadUserId = tostring(TargetResources[0].id)
+  | extend mod_props = TargetResources[0].modifiedProperties
+  | mv-expand mod_props
+  | where mod_props.displayName =~ "Application.DisplayName"
+  | extend TargetAppName = tostring(parse_json(tostring(mod_props.newValue)))
+  | extend AddedUser = TargetUserPrincipalName
+  | extend UpdatedBy = iif(isnotempty(InitiatingAppName), InitiatingAppName, InitiatingUserPrincipalName)
+  | extend InitiatingAccountName = tostring(split(InitiatingUserPrincipalName, "@")[0]), InitiatingAccountUPNSuffix = tostring(split(InitiatingUserPrincipalName, "@")[1])
+  | extend TargetAccountName = tostring(split(TargetUserPrincipalName, "@")[0]), TargetAccountUPNSuffix = tostring(split(TargetUserPrincipalName, "@")[1])
+  | project-reorder TimeGenerated, InitiatingAppName, InitiatingAppServicePrincipalId, InitiatingAadUserId, InitiatingUserPrincipalName, InitiatingIPAddress, TargetAppName, AddedUser, UpdatedBy

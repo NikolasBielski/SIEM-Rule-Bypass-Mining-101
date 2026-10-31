@@ -1,0 +1,27 @@
+// hunt-ready (watchlist): Multi-Factor Authentication Disabled for a User
+// challenge: CH2
+// original rule window: queryFrequency=PT1H  queryPeriod=PT1H  |  hunt widened to scan the full 730d watchlist (step/bin sizes preserved)
+// backtest: set the Logs time-picker to 'Set in query' (or Last 2 years)
+// functions used: AuditLogs_CH2
+
+(union isfuzzy=true
+(AuditLogs_CH2
+| where OperationName =~ "Disable Strong Authentication"
+| extend _parsedIntiatedByUser = parse_json(tostring(InitiatedBy.user))
+| extend _parsedIntiatedByApp = parse_json(tostring(InitiatedBy.app))
+| extend IPAddress = tostring(_parsedIntiatedByUser.ipAddress)
+| extend InitiatedByUser = iff(isnotempty(tostring(_parsedIntiatedByUser.userPrincipalName)),
+ tostring(_parsedIntiatedByUser.userPrincipalName), tostring(_parsedIntiatedByApp.displayName))
+| extend Targetprop = todynamic(TargetResources)
+| extend TargetUser = tostring(Targetprop[0].userPrincipalName)
+| summarize StartTimeUtc = min(TimeGenerated), EndTimeUtc = max(TimeGenerated) by User = TargetUser, InitiatedByUser , Operation = OperationName , CorrelationId, IPAddress, Category, Source = SourceSystem , AADTenantId, Type
+),
+(AWSCloudTrail
+| where EventName in~ ("DeactivateMFADevice", "DeleteVirtualMFADevice")
+| extend _parsedRequestParameters = parse_json(RequestParameters)
+| extend InstanceProfileName = tostring(_parsedRequestParameters.InstanceProfileName)
+| extend TargetUser = tostring(_parsedRequestParameters.userName)
+| summarize StartTimeUtc = min(TimeGenerated), EndTimeUtc = max(TimeGenerated) by User = TargetUser, Source = EventSource , Operation = EventName , TenantorInstance_Detail = InstanceProfileName, IPAddress = SourceIpAddress
+)
+)
+| extend timestamp = StartTimeUtc, UserName = tostring(split(User, '@', 0)[0]), UPNSuffix = tostring(split(User, '@', 1)[0])

@@ -1,0 +1,22 @@
+// hunt-ready (watchlist): Privileged Role Assigned Outside PIM
+// challenge: CH2
+// original rule window: queryFrequency=P1D  queryPeriod=P1D  |  hunt widened to scan the full 730d watchlist (step/bin sizes preserved)
+// backtest: set the Logs time-picker to 'Set in query' (or Last 2 years)
+// functions used: AuditLogs_CH2
+
+AuditLogs_CH2
+| where Category =~ "RoleManagement"
+| where OperationName has "Add member to role outside of PIM"
+        or (LoggedByService =~ "Core Directory" and OperationName =~ "Add member to role" and Identity != "MS-PIM" and Identity != "MS-PIM-Fairfax")
+| mv-apply TargetResource = TargetResources on 
+  (
+      where TargetResource.type =~ "User"
+      | extend TargetUserPrincipalName = tostring(TargetResource.userPrincipalName)
+  )
+| extend InitiatingAppName = tostring(InitiatedBy.app.displayName)
+| extend InitiatingAppServicePrincipalId = tostring(InitiatedBy.app.servicePrincipalId)
+| extend InitiatingUserPrincipalName = tostring(InitiatedBy.user.userPrincipalName)
+| extend InitiatingAadUserId = tostring(InitiatedBy.user.id)
+| extend InitiatingIpAddress = tostring(iff(isnotempty(InitiatedBy.user.ipAddress), InitiatedBy.user.ipAddress, InitiatedBy.app.ipAddress))
+| extend TargetName = tostring(split(TargetUserPrincipalName,'@',0)[0]), TargetUPNSuffix = tostring(split(TargetUserPrincipalName,'@',1)[0])
+| extend InitiatedByName = tostring(split(InitiatingUserPrincipalName,'@',0)[0]), InitiatedByUPNSuffix = tostring(split(InitiatingUserPrincipalName,'@',1)[0])

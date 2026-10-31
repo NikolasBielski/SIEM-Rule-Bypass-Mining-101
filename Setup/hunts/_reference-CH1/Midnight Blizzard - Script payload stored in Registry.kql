@@ -1,0 +1,39 @@
+// hunt-ready (watchlist): Midnight Blizzard - Script payload stored in Registry
+// challenge: CH1
+// original rule window: queryFrequency=P1D  queryPeriod=P1D  |  hunt widened to scan the full 730d watchlist (step/bin sizes preserved)
+// backtest: set the Logs time-picker to 'Set in query' (or Last 2 years)
+// functions used: SecurityEvent_CH1
+
+let cmdTokens0 = dynamic(['vbscript','jscript']);
+let cmdTokens1 = dynamic(['mshtml','RunHTMLApplication']);
+let cmdTokens2 = dynamic(['Execute','CreateObject','RegRead','window.close']);
+(union isfuzzy=true 
+(SecurityEvent_CH1
+| where TimeGenerated >= ago(730d)
+| where EventID == 4688
+| where CommandLine has @'\Microsoft\Windows\CurrentVersion'
+| where not(CommandLine has_any (@'\Software\Microsoft\Windows\CurrentVersion\Run', @'\Software\Microsoft\Windows\CurrentVersion\RunOnce'))
+// If you are receiving false positives, then it may help to make the query more strict by uncommenting one or both of the lines below to refine the matches
+//| where CommandLine has_any (cmdTokens0)
+//| where CommandLine has_all (cmdTokens1)
+| where CommandLine has_all (cmdTokens2)
+| project TimeGenerated, Computer, Account, Process, NewProcessName, CommandLine, ParentProcessName, _ResourceId
+),
+(WindowsEvent
+| where TimeGenerated >= ago(730d)
+| where EventID == 4688 and EventData has_all(cmdTokens2) and  EventData has @'\Microsoft\Windows\CurrentVersion'
+| where not(EventData has_any (@'\Software\Microsoft\Windows\CurrentVersion\Run', @'\Software\Microsoft\Windows\CurrentVersion\RunOnce'))
+| extend CommandLine = tostring(EventData.CommandLine)
+| where CommandLine has @'\Microsoft\Windows\CurrentVersion'
+| where not(CommandLine has_any (@'\Software\Microsoft\Windows\CurrentVersion\Run', @'\Software\Microsoft\Windows\CurrentVersion\RunOnce'))
+// If you are receiving false positives, then it may help to make the query more strict by uncommenting one or both of the lines below to refine the matches
+//| where CommandLine has_any (cmdTokens0)
+//| where CommandLine has_all (cmdTokens1)
+| where CommandLine has_all (cmdTokens2)
+| extend Account =  strcat(EventData.SubjectDomainName,"\\", EventData.SubjectUserName)
+| extend NewProcessName = tostring(EventData.NewProcessName)
+| extend Process=tostring(split(NewProcessName, '\\')[-1])
+| extend ParentProcessName = tostring(EventData.ParentProcessName)  
+| project TimeGenerated, Computer, Account, Process, NewProcessName, CommandLine, ParentProcessName, _ResourceId)
+| extend Name = tostring(split(Account, "\\")[1]), NTDomain = tostring(split(Account, "\\")[0])
+| extend DnsDomain = tostring(strcat_array(array_slice(split(Computer, '.'), 1, -1), '.')), HostName = tostring(split(Computer, '.', 0)[0]))

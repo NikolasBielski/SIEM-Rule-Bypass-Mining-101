@@ -1,0 +1,22 @@
+// hunt-ready (watchlist): Authentication Method Changed for Privileged Account
+// challenge: CH2
+// original rule window: queryFrequency=PT2H  queryPeriod=P14D  |  hunt widened to scan the full 730d watchlist (step/bin sizes preserved)
+// backtest: set the Logs time-picker to 'Set in query' (or Last 2 years)
+// functions used: AuditLogs_CH2
+
+let VIPUsers = (IdentityInfo
+| where AssignedRoles contains "Admin"
+| summarize by tolower(AccountUPN));
+AuditLogs_CH2
+| where TimeGenerated > ago(730d)
+| where Category =~ "UserManagement"
+| where ActivityDisplayName =~ "User registered security info"
+| where LoggedByService =~ "Authentication Methods"
+| extend TargetUserPrincipalName = tostring(TargetResources[0].userPrincipalName)
+| where tolower(TargetUserPrincipalName) in (VIPUsers)
+| extend TargetAadUserId = tostring(TargetResources[0].id)
+| extend InitiatingUserPrincipalName = tostring(InitiatedBy.user.userPrincipalName)
+| extend InitiatingAadUserId = tostring(InitiatedBy.user.id)
+| extend InitiatingIPAddress = tostring(InitiatedBy.user.ipAddress)
+| extend TargetAccountName = tostring(split(TargetUserPrincipalName, "@")[0]), TargetAccountUPNSuffix = tostring(split(TargetUserPrincipalName, "@")[1])
+| extend InitiatingAccountName = tostring(split(InitiatingUserPrincipalName, "@")[0]), InitiatingAccountUPNSuffix = tostring(split(InitiatingUserPrincipalName, "@")[1])

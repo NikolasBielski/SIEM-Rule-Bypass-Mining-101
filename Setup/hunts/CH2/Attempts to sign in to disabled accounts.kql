@@ -1,0 +1,20 @@
+// hunt-ready (watchlist): Attempts to sign in to disabled accounts
+// challenge: CH2
+// original rule window: queryFrequency=P1D  queryPeriod=P1D  |  hunt widened to scan the full 730d watchlist (step/bin sizes preserved)
+// backtest: set the Logs time-picker to 'Set in query' (or Last 2 years)
+// functions used: SigninLogs_CH2
+// FLAGS: table(variable) - fix the let/tableName refs by hand | also unions AADNonInteractiveUserSignInLogs (no watchlist)
+
+let threshold = 3;
+let aadFunc = (tableName:string){
+table(tableName)
+| where ResultType == "50057"
+| where ResultDescription =~ "User account is disabled. The account has been disabled by an administrator."
+| summarize StartTime = min(TimeGenerated), EndTime = max(TimeGenerated), applicationCount = dcount(AppDisplayName),
+applicationSet = make_set(AppDisplayName), count() by UserPrincipalName, IPAddress, Type
+| where applicationCount >= threshold
+| extend Name = tostring(split(UserPrincipalName,'@',0)[0]), UPNSuffix = tostring(split(UserPrincipalName,'@',1)[0])
+};
+let aadSignin = aadFunc("SigninLogs_CH2");
+let aadNonInt = aadFunc("AADNonInteractiveUserSignInLogs");
+union isfuzzy=true aadSignin, aadNonInt

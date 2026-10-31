@@ -1,0 +1,22 @@
+// hunt-ready (watchlist): Security Event log cleared
+// challenge: CH1
+// original rule window: queryFrequency=P1D  queryPeriod=P1D  |  hunt widened to scan the full 730d watchlist (step/bin sizes preserved)
+// backtest: set the Logs time-picker to 'Set in query' (or Last 2 years)
+// functions used: SecurityEvent_CH1
+
+(union isfuzzy=true
+(
+SecurityEvent_CH1
+| where EventID == 1102 and EventSourceName =~ "Microsoft-Windows-Eventlog"
+| summarize StartTimeUtc = min(TimeGenerated), EndTimeUtc = max(TimeGenerated), EventCount = count() by Computer, Account, EventID, Activity
+),
+(
+WindowsEvent
+| where EventID == 1102 and Provider =~ "Microsoft-Windows-Eventlog"
+| extend Account =  strcat(tostring(EventData.SubjectDomainName),"\\", tostring(EventData.SubjectUserName))
+| extend Activity= "1102 - The audit log was cleared."
+| summarize StartTimeUtc = min(TimeGenerated), EndTimeUtc = max(TimeGenerated), EventCount = count() by Computer, Account, EventID, Activity
+)
+)
+| extend Name=tostring(split(Account, "@")[0]), UPNSuffix=tostring(split(Account, "@")[1])
+| extend HostName = iif(Computer has '.',substring(Computer,0,indexof(Computer,'.')),Computer) , DnsDomain = iif(Computer has '.',substring(Computer,indexof(Computer,'.')+1),'')

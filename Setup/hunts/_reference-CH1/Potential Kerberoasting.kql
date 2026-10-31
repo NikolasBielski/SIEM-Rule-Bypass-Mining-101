@@ -1,0 +1,65 @@
+// hunt-ready (watchlist): Potential Kerberoasting
+// challenge: CH1
+// original rule window: queryFrequency=PT1H  queryPeriod=P1D  |  hunt widened to scan the full 730d watchlist (step/bin sizes preserved)
+// backtest: set the Logs time-picker to 'Set in query' (or Last 2 years)
+// functions used: SecurityEvent_CH1
+
+let starttime = 730d;
+let endtime = 1h;
+let prev23hThreshold = 4;
+let prev1hThreshold = 15;
+let Kerbevent = (union isfuzzy=true
+(SecurityEvent_CH1
+| where TimeGenerated >= ago(730d)
+| where EventID == 4769
+| parse EventData with * 'TicketEncryptionType">' TicketEncryptionType "<" *
+| where TicketEncryptionType == '0x17'
+| parse EventData with * 'TicketOptions">' TicketOptions "<" *
+| where TicketOptions == '0x40810000'
+| parse EventData with * 'Status">' Status "<" *
+| where Status == '0x0'
+| parse EventData with * 'ServiceName">' ServiceName "<" *
+| where ServiceName !contains "$" and ServiceName !contains "krbtgt"
+| parse EventData with * 'TargetUserName">' TargetUserName "<" *
+| where TargetUserName !contains "$@" and TargetUserName !contains ServiceName
+| parse EventData with * 'IpAddress">::ffff:' ClientIPAddress "<" *
+),
+(
+WindowsEvent
+| where TimeGenerated >= ago(730d)
+| where EventID == 4769 and EventData has '0x17' and EventData has '0x40810000' and EventData has 'krbtgt'
+| extend TicketEncryptionType = tostring(EventData.TicketEncryptionType)
+| where TicketEncryptionType == '0x17'
+| extend TicketOptions = tostring(EventData.TicketOptions)
+| where TicketOptions == '0x40810000'
+| extend Status = tostring(EventData.Status)
+| where Status == '0x0'
+| extend ServiceName = tostring(EventData.ServiceName)
+| where ServiceName !contains "$" and ServiceName !contains "krbtgt"
+| extend TargetUserName = tostring(EventData.TargetUserName)
+| where TargetUserName !contains "$@" and TargetUserName !contains ServiceName
+| extend ClientIPAddress = tostring(EventData.IpAddress)
+));
+let Kerbevent23h = Kerbevent
+| where TimeGenerated >= ago(730d) and TimeGenerated < ago(endtime)
+| summarize ServiceNameCountPrev23h = dcount(ServiceName), ServiceNameSet23h = makeset(ServiceName)
+by Computer, TargetUserName,TargetDomainName, ClientIPAddress, TicketOptions, TicketEncryptionType, Status
+| where ServiceNameCountPrev23h < prev23hThreshold;
+let Kerbevent1h =
+Kerbevent
+| where TimeGenerated >= ago(730d)
+| summarize min(TimeGenerated), max(TimeGenerated), ServiceNameCountPrev1h = dcount(ServiceName), ServiceNameSet1h = makeset(ServiceName)
+by Computer, TargetUserName, TargetDomainName, ClientIPAddress, TicketOptions, TicketEncryptionType, Status;
+Kerbevent1h
+| join kind=leftanti
+(
+Kerbevent23h
+) on TargetUserName, TargetDomainName
+// Threshold value set above is based on testing, this value may need to be changed for your environment.
+| where ServiceNameCountPrev1h > prev1hThreshold
+| project StartTime = min_TimeGenerated, EndTime = max_TimeGenerated, TargetUserName, Computer, ClientIPAddress, TicketOptions,
+TicketEncryptionType, Status, ServiceNameCountPrev1h, ServiceNameSet1h, TargetDomainName
+| extend HostName = tostring(split(Computer, ".")[0]), DomainIndex = toint(indexof(Computer, '.'))
+| extend HostNameDomain = iff(DomainIndex != -1, substring(Computer, DomainIndex + 1), Computer)
+| extend TargetAccount = strcat(TargetDomainName,  "\\", TargetUserName)
+| project-away DomainIndex

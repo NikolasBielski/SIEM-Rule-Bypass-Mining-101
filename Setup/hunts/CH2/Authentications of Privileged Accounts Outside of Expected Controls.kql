@@ -1,0 +1,30 @@
+// hunt-ready (watchlist): Authentications of Privileged Accounts Outside of Expected Controls
+// challenge: CH2
+// original rule window: queryFrequency=P1D  queryPeriod=P7D  |  hunt widened to scan the full 730d watchlist (step/bin sizes preserved)
+// backtest: set the Logs time-picker to 'Set in query' (or Last 2 years)
+// functions used: SigninLogs_CH2
+
+let admin_users = (IdentityInfo
+  | summarize arg_max(TimeGenerated, *) by AccountUPN
+  | where AssignedRoles contains "admin"
+  | summarize by tolower(AccountUPN));
+  let admin_asn = (SigninLogs_CH2
+  | where TimeGenerated between (ago(7d)..ago(1d))
+  | where tolower(UserPrincipalName) in (admin_users)
+  | summarize by AutonomousSystemNumber);
+  let admin_locations = (SigninLogs_CH2
+  | where TimeGenerated between (ago(7d)..ago(1d))
+  | where tolower(UserPrincipalName) in (admin_users)
+  | summarize by Location);
+  let admin_devices = (SigninLogs_CH2
+  | where TimeGenerated between (ago(7d)..ago(1d))
+  | where tolower(UserPrincipalName) in (admin_users)
+  | extend deviceId = tostring(DeviceDetail.deviceId)
+  | where isnotempty(deviceId)
+  | summarize by deviceId);
+  SigninLogs_CH2
+  | where TimeGenerated > ago(730d)
+  | where ResultType == 0
+  | where tolower(UserPrincipalName) in (admin_users)
+  | extend deviceId = tostring(DeviceDetail.deviceId)
+  | where AutonomousSystemNumber !in (admin_asn) and deviceId !in (admin_devices) and Location !in (admin_locations)

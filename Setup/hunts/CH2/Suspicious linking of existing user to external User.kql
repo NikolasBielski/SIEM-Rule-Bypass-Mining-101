@@ -1,0 +1,25 @@
+// hunt-ready (watchlist): Suspicious linking of existing user to external User
+// challenge: CH2
+// original rule window: queryFrequency=P1D  queryPeriod=P1D  |  hunt widened to scan the full 730d watchlist (step/bin sizes preserved)
+// backtest: set the Logs time-picker to 'Set in query' (or Last 2 years)
+// functions used: AuditLogs_CH2
+
+AuditLogs_CH2
+| where OperationName=~ "Update user" 
+| where Result =~ "success" 
+| mv-expand TargetResources 
+| mv-expand TargetResources.modifiedProperties 
+| extend displayName = tostring(TargetResources_modifiedProperties.displayName), 
+TargetUPN_oldValue = tostring(parse_json(tostring(TargetResources_modifiedProperties.oldValue))[0]), 
+TargetUPN_newValue = tostring(parse_json(tostring(TargetResources_modifiedProperties.newValue))[0])
+| where displayName == "UserPrincipalName" and TargetUPN_oldValue !has "#EXT" and TargetUPN_newValue has "#EXT"
+| extend InitiatingAppName = tostring(InitiatedBy.app.displayName)
+| extend InitiatingAppServicePrincipalId = tostring(InitiatedBy.app.servicePrincipalId)
+| extend InitiatingUserPrincipalName = tostring(InitiatedBy.user.userPrincipalName)
+| extend InitiatingAadUserId = tostring(InitiatedBy.user.id)
+| extend InitiatingIPAddress = tostring(InitiatedBy.user.ipAddress)
+| extend InitiatedBy = tostring(iff(isnotempty(InitiatingUserPrincipalName),InitiatingUserPrincipalName, InitiatingAppName))
+| summarize arg_max(TimeGenerated, *) by CorrelationId
+| project-reorder TimeGenerated, InitiatedBy, InitiatingAppName, InitiatingAppServicePrincipalId, InitiatingUserPrincipalName, InitiatingAadUserId, InitiatingIPAddress, TargetUPN_oldValue, TargetUPN_newValue
+| extend InitiatingAccountName = tostring(split(InitiatingUserPrincipalName, "@")[0]), InitiatingAccountUPNSuffix = tostring(split(InitiatingUserPrincipalName, "@")[1])
+| extend TargetAccountName = tostring(split(TargetUPN_oldValue, "@")[0]), TargetUPNSuffix = tostring(split(TargetUPN_oldValue, "@")[1])

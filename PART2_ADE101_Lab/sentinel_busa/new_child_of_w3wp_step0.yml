@@ -1,0 +1,24 @@
+title: Sentinel New Child Process of w3wp.exe (child-only) - Step 0 LOGIC BUG
+id: a1b2c3d4-0005-4a01-8b01-000000000005
+status: experimental
+description: |
+  Sigma port of Azure Sentinel's NewChildProcessOfW3WP hunting query.
+references:
+  - https://github.com/Azure/Azure-Sentinel/blob/master/Solutions/Windows%20Security%20Events/Hunting%20Queries/NewChildProcessOfW3WP.yaml
+author: sentinel_busa
+date: 2026-10-19
+logsource:
+  product: windows
+  category: process_creation
+detection:
+  selection:
+    ParentImage|endswith: '\w3wp.exe'
+  condition: selection
+falsepositives:
+  - Benign w3wp child processes (e.g. csc.exe dynamic compilation)
+level: medium
+tags:
+  - attack.initial_access
+  - attack.t1190
+  - attack.t1505.003
+details: 'Image: %Image% | OriginalFileName: %OriginalFileName% | Cmd: %CommandLine% | Parent: %ParentImage%'

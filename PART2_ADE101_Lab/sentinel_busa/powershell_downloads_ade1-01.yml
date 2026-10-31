@@ -1,0 +1,34 @@
+title: Sentinel PowerShell Downloads (literal tokens) - ADE1-01 BUGGY
+id: a1b2c3d4-0004-4a01-8b01-000000000004
+status: experimental
+description: |
+  Sigma port of Azure Sentinel's imProcess_powershell_downloads rule.
+references:
+  - https://github.com/Azure/Azure-Sentinel/blob/master/Hunting%20Queries/ASimProcess/imProcess_powershell_downloads.yaml
+author: sentinel_busa
+date: 2026-10-19
+logsource:
+  product: windows
+  category: process_creation
+detection:
+  ps:
+    Image|endswith:
+      - '\powershell.exe'
+      - '\powershell_ise.exe'
+  tokens:
+    CommandLine|contains:
+      - 'Net.WebClient'
+      - 'DownloadFile'
+      - 'Invoke-WebRequest'
+      - 'Invoke-Shellcode'
+      - 'http:'
+      - 'https:'
+  condition: ps and tokens
+falsepositives:
+  - Legitimate PowerShell downloads
+level: medium
+tags:
+  - attack.execution
+  - attack.t1059.001
+  - attack.command_and_control
+details: 'Image: %Image% | Cmd: %CommandLine% | Parent: %ParentImage%'

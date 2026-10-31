@@ -1,0 +1,14 @@
+// hunt-ready (watchlist): Midnight Blizzard - suspicious rundll32.exe execution of vbscript Normalized Process Events
+// challenge: CH1
+// original rule window: queryFrequency=P1D  queryPeriod=P1D  |  hunt widened to scan the full 730d watchlist (step/bin sizes preserved)
+// backtest: set the Logs time-picker to 'Set in query' (or Last 2 years)
+// functions used: ProcessCreate_CH1
+
+ProcessCreate_CH1
+| where Process hassuffix 'rundll32.exe'
+| where CommandLine  has_any ('Execute','RegRead','window.close')
+| project TimeGenerated, Dvc, User, Process, CommandLine, ActingProcessName, EventVendor, EventProduct
+| extend AccountName = tostring(split(User, @'\')[1]), AccountNTDomain = tostring(split(User, @'\')[0])
+| extend HostName = tostring(split(Dvc, ".")[0]), DomainIndex = toint(indexof(Dvc, '.'))
+| extend HostNameDomain = iff(DomainIndex != -1, substring(Dvc, DomainIndex + 1), Dvc)
+| project-away DomainIndex

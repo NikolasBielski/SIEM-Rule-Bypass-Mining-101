@@ -1,0 +1,58 @@
+// hunt-ready (watchlist): New External User Granted Admin Role
+// challenge: CH2
+// original rule window: queryFrequency=P1D  queryPeriod=P1D  |  hunt widened to scan the full 730d watchlist (step/bin sizes preserved)
+// backtest: set the Logs time-picker to 'Set in query' (or Last 2 years)
+// functions used: AuditLogs_CH2
+
+// Administrative roles to look for, default is all admin roles
+let roles = dynamic(["Administrator", "Admin"]);
+// The maximum distances between and invite and acceptance
+let maxTimeBetweenInviteAccept = 30min;
+// The delta (minutes) between the invite being sent and the account being escalated
+let deltaBetweenInviteEscalation = 60;
+// Collect external user invitations
+let invite = AuditLogs_CH2
+| where Category =~ "UserManagement"
+| where OperationName =~ "Invite external user"
+| extend Target = tostring(TargetResources[0].["userPrincipalName"])
+| extend InviteInitiator = tostring(InitiatedBy.["user"].["userPrincipalName"])
+| where isnotempty(InviteInitiator);
+// Collect redeem events
+let redeem = AuditLogs_CH2
+| where Category =~ "UserManagement"
+| where OperationName =~ "Redeem external user invite"
+| where Result =~ "success"
+| extend Target = tostring(TargetResources[0].["displayName"]) | extend Target = tostring(extract(@"UPN\:\s(.+)\,\sEmail",1,Target))
+| where isnotempty(Target);
+// Union the inivtation and redeem data then run the sequence_detect kusto plugin
+invite
+| union redeem
+| order by TimeGenerated
+| project TimeGenerated, Target, InviteInitiator, OperationName, TenantId
+| evaluate sequence_detect(TimeGenerated, maxTimeBetweenInviteAccept, maxTimeBetweenInviteAccept, invite=(OperationName has "Invite external user"), redeem=(OperationName has "Redeem external user invite"), Target)
+| join kind=innerunique (
+AuditLogs_CH2
+| where Category =~ "RoleManagement"
+| where AADOperationType in~ ("Assign", "AssignEligibleRole")
+| where ActivityDisplayName has_any ("Add eligible member to role", "Add member to role")
+| mv-expand TargetResources
+// Limit to external accounts
+| where TargetResources.userPrincipalName has "EXT"
+| mv-expand TargetResources.modifiedProperties
+| extend displayName_ = tostring(TargetResources_modifiedProperties.displayName)
+| where displayName_ =~ "Role.DisplayName"
+| extend RoleName = tostring(parse_json(tostring(TargetResources_modifiedProperties.newValue)))
+// Perform check for admin roles
+| where RoleName has_any(roles)
+| extend InitiatingApp = tostring(parse_json(tostring(InitiatedBy.app)).displayName)
+| extend Initiator = iif(isnotempty(InitiatingApp), InitiatingApp, tostring(parse_json(tostring(InitiatedBy.user)).userPrincipalName))
+| where Initiator != "MS-PIM"
+| extend Target = tostring(TargetResources.userPrincipalName)
+| summarize by TimeGenerated, OperationName,  RoleName, Target, Initiator, Result
+) on Target
+// Calculate delta between the invite and the account escalation
+| extend delta = datetime_diff("minute", TimeGenerated, invite_TimeGenerated)
+| where delta <= deltaBetweenInviteEscalation
+| project InvitationTime=invite_TimeGenerated, RedeemTime=redeem_TimeGenerated, GrantTime=TimeGenerated, ExternalUser=Target, RoleGranted=RoleName, AdminInitiator=Initiator, MinsBetweenInviteAndEscalation=delta
+| extend ExternalUserName = tostring(split(ExternalUser, '@', 0)[0]), ExternalUserUPNSuffix = tostring(split(ExternalUser, '@', 1)[0])
+| extend AdminInitiatorName = tostring(split(AdminInitiator, '@', 0)[0]), AdminInitiatorUPNSuffix = tostring(split(AdminInitiator, '@', 1)[0])

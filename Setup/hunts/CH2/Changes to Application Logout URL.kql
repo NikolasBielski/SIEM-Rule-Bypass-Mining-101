@@ -1,0 +1,24 @@
+// hunt-ready (watchlist): Changes to Application Logout URL
+// challenge: CH2
+// original rule window: queryFrequency=P1D  queryPeriod=P1D  |  hunt widened to scan the full 730d watchlist (step/bin sizes preserved)
+// backtest: set the Logs time-picker to 'Set in query' (or Last 2 years)
+// functions used: AuditLogs_CH2
+
+AuditLogs_CH2
+  | where Category =~ "ApplicationManagement"
+  | where OperationName has_any ("Update Application", "Update Service principal")
+  | extend InitiatingAppName = tostring(InitiatedBy.app.displayName)
+  | extend InitiatingAppServicePrincipalId = tostring(InitiatedBy.app.servicePrincipalId)
+  | extend InitiatingUserPrincipalName = tostring(InitiatedBy.user.userPrincipalName)
+  | extend InitiatingAadUserId = tostring(InitiatedBy.user.id)
+  | extend InitiatingIPAddress = tostring(InitiatedBy.user.ipAddress)
+  | extend TargetAppName = tostring(TargetResources[0].displayName)
+  | extend mod_props = TargetResources[0].modifiedProperties
+  | mv-expand mod_props
+  | extend Action = tostring(mod_props.displayName)
+  | where Action contains "Url"
+  | extend UpdatedBy = iif(isnotempty(InitiatingAppName), InitiatingAppName, InitiatingUserPrincipalName)
+  | extend OldURL = tostring(mod_props.oldValue)
+  | extend NewURL = tostring(mod_props.newValue)
+  | extend InitiatingAccountName = tostring(split(InitiatingUserPrincipalName, "@")[0]), InitiatingAccountUPNSuffix = tostring(split(InitiatingUserPrincipalName, "@")[1])
+  | project-reorder TimeGenerated, InitiatingAppName, InitiatingAppServicePrincipalId, InitiatingAadUserId, InitiatingUserPrincipalName, InitiatingIPAddress, UpdatedBy

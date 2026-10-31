@@ -1,0 +1,37 @@
+// hunt-ready (watchlist): Authentication Methods Changed for Privileged Account
+// challenge: CH2
+// original rule window: queryFrequency=PT2H  queryPeriod=P14D  |  hunt widened to scan the full 730d watchlist (step/bin sizes preserved)
+// backtest: set the Logs time-picker to 'Set in query' (or Last 2 years)
+// functions used: AuditLogs_CH2
+
+let queryperiod = 730d;
+let queryfrequency = 730d;
+let security_info_actions = dynamic(["User registered security info", "User changed default security info", "User deleted security info", "Admin updated security info", "User reviewed security info", "Admin deleted security info", "Admin registered security info"]);
+let VIPUsers = (
+    IdentityInfo
+    | where TimeGenerated > ago(730d)
+    | mv-expand AssignedRoles
+    | where AssignedRoles contains 'Admin'
+    | summarize by AccountUPN);
+AuditLogs_CH2
+| where TimeGenerated > ago(730d)
+| where Category =~ "UserManagement"
+| where ActivityDisplayName in (security_info_actions)
+| extend InitiatingAppName = tostring(InitiatedBy.app.displayName)
+| extend InitiatingAppServicePrincipalId = tostring(InitiatedBy.app.servicePrincipalId)
+| extend InitiatingUserPrincipalName = tostring(InitiatedBy.user.userPrincipalName)
+| extend InitiatingAadUserId = tostring(InitiatedBy.user.id)
+| extend InitiatingIpAddress = tostring(iff(isnotempty(InitiatedBy.user.ipAddress), InitiatedBy.user.ipAddress, InitiatedBy.app.ipAddress))
+| mv-apply TargetResource = TargetResources on 
+  (
+      where TargetResource.type =~ "User"
+      | extend TargetUserPrincipalName = tostring(TargetResource.userPrincipalName)
+  )
+| where TargetUserPrincipalName in~ (VIPUsers)
+// Uncomment the line below if you are experiencing high volumes of Target entities. If this is uncommented, the Target column will not be mapped to an entity.
+//| summarize Start=min(TimeGenerated), End=max(TimeGenerated), Actions = make_set(ResultReason, MaxSize=8), Targets=make_set(Target, MaxSize=256) by Initiator, IP, Result
+// Comment out this line below, if line above is used.
+| summarize Start=min(TimeGenerated), End=max(TimeGenerated), Actions = make_set(ResultReason, MaxSize=8) by InitiatingAppName, InitiatingAppServicePrincipalId, 
+InitiatingUserPrincipalName, InitiatingAadUserId, InitiatingIpAddress, TargetUserPrincipalName, Result
+| extend InitiatingAccountName = tostring(split(InitiatingUserPrincipalName, "@")[0]), InitiatingAccountUPNSuffix = tostring(split(InitiatingUserPrincipalName, "@")[1]), 
+TargetName = iff(tostring(TargetUserPrincipalName) has "[", "", tostring(split(TargetUserPrincipalName,'@',0)[0])), TargetUPNSuffix = iff(tostring(TargetUserPrincipalName) has "[", "", tostring(split(TargetUserPrincipalName,'@',1)[0]))

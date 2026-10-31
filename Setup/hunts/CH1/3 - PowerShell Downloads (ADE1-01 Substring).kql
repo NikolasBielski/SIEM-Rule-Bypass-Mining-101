@@ -1,0 +1,13 @@
+// CH1 - PowerShell Downloads - BYPASSED  |  ADE1-01 Substring Manipulation
+// Rule intent : catch PowerShell downloading a file.
+// The bug     : the rule matches LITERAL cmdlet strings. The attacker built the same
+//               download by concatenation ('Net.We'+'bClient', 'Down'+'loadFile',
+//               'ht'+'tp://') so none of those literal tokens ever appear.
+// Try it      : returns NOTHING on the CTF data.
+ProcessCreate_CH1
+| where Process has_any ("powershell.exe","powershell_ise.exe")
+| where CommandLine has_any ("Net.WebClient","DownloadFile","Invoke-WebRequest","Invoke-Shellcode","http:","https:")
+
+// --- PATCHED: flag the obfuscation itself (New-Object + string concatenation) ---
+// | where Process has_any ("powershell.exe","pwsh.exe")
+// | where CommandLine has "New-Object" and (CommandLine has "+'" or CommandLine has "$env:TEMP")

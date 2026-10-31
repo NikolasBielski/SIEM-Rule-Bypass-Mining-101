@@ -1,0 +1,50 @@
+// hunt-ready (watchlist): SharePointFileOperation via devices with previously unseen user agents
+// challenge: CH2
+// original rule window: queryFrequency=P1D  queryPeriod=P14D  |  hunt widened to scan the full 730d watchlist (step/bin sizes preserved)
+// backtest: set the Logs time-picker to 'Set in query' (or Last 2 years)
+// functions used: OfficeActivity_CH2
+
+// Set threshold for the number of downloads/uploads from a new user agent
+let threshold = 5;
+// Define constants for SharePoint file operations
+let szSharePointFileOperation = "SharePointFileOperation";
+let szOperations = dynamic(["FileDownloaded", "FileUploaded"]);
+// Define the historical activity for analysis
+let starttime = 730d; // Define the start time for historical data (14 days ago)
+let endtime = 1d;   // Define the end time for historical data (1 day ago)
+// Extract the base events for analysis
+let Baseevents =
+  OfficeActivity_CH2
+  | where TimeGenerated between (ago(starttime) .. ago(endtime))
+  | where RecordType =~ szSharePointFileOperation
+  | where Operation in~ (szOperations)
+  | where isnotempty(UserAgent);
+// Identify frequently occurring user agents
+let FrequentUA = Baseevents
+  | summarize FUACount = count() by UserAgent, RecordType, Operation
+  | where FUACount >= threshold
+  | distinct UserAgent;
+// Calculate a user baseline for further analysis
+let UserBaseLine = Baseevents
+  | summarize Count = count() by UserId, Operation, Site_Url
+  | summarize AvgCount = avg(Count) by UserId, Operation, Site_Url;
+// Extract recent activity for analysis
+let RecentActivity = OfficeActivity_CH2
+  | where TimeGenerated > ago(730d)
+  | where RecordType =~ szSharePointFileOperation
+  | where Operation in~ (szOperations)
+  | where isnotempty(UserAgent)
+  | where UserAgent in~ (FrequentUA)
+  | summarize StartTime = min(TimeGenerated), EndTime = max(TimeGenerated), OfficeObjectIdCount = dcount(OfficeObjectId), OfficeObjectIdList = make_set(OfficeObjectId), UserAgentSeenCount = count() 
+  by RecordType, Operation, UserAgent, UserType, UserId, ClientIP, OfficeWorkload, Site_Url;
+// Analyze user behavior based on baseline and recent activity
+let UserBehaviorAnalysis = UserBaseLine
+  | join kind=inner (RecentActivity) on UserId, Operation, Site_Url
+  | extend Deviation = abs(UserAgentSeenCount - AvgCount) / AvgCount;
+// Filter and format results for specific user behavior analysis
+UserBehaviorAnalysis
+  | where Deviation > 25
+  | extend UserIdName = tostring(split(UserId, '@')[0]), UserIdUPNSuffix = tostring(split(UserId, '@')[1])
+  | project-reorder StartTime, EndTime, UserAgent, UserAgentSeenCount, UserId, ClientIP, Site_Url
+  | project-away Site_Url1, UserId1, Operation1
+  | order by UserAgentSeenCount desc, UserAgent asc, UserId asc, Site_Url asc

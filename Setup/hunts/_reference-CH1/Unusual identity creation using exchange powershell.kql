@@ -1,0 +1,21 @@
+// hunt-ready (watchlist): Unusual identity creation using exchange powershell
+// challenge: CH1
+// original rule window: queryFrequency=PT12H  queryPeriod=PT12H  |  hunt widened to scan the full 730d watchlist (step/bin sizes preserved)
+// backtest: set the Logs time-picker to 'Set in query' (or Last 2 years)
+// functions used: SecurityEvent_CH1
+
+(union isfuzzy=true
+(SecurityEvent_CH1
+| where EventID==4688
+| where CommandLine has_any ("New-Mailbox","Update-RoleGroupMember") and CommandLine has "HealthMailbox55x2yq"
+| project TimeGenerated, DeviceName = Computer, AccountName = SubjectUserName, AccountDomain = SubjectDomainName, ProcessName, ProcessNameFullPath = NewProcessName, EventID, Activity, CommandLine, EventSourceName, Type
+| extend InitiatingProcessAccount = strcat(AccountDomain, "\\", AccountName)
+),
+(DeviceProcessEvents
+| where ProcessCommandLine has_any ("New-Mailbox","Update-RoleGroupMember") and ProcessCommandLine has "HealthMailbox55x2yq"
+| extend timestamp = TimeGenerated, AccountDomain = InitiatingProcessAccountDomain, AccountName = InitiatingProcessAccountName
+| extend InitiatingProcessAccount = strcat(AccountDomain, "\\", AccountName)
+)
+)
+| extend HostName = tostring(split(DeviceName, ".")[0]), DomainIndex = toint(indexof(DeviceName, '.'))
+| extend HostNameDomain = iff(DomainIndex != -1, substring(DeviceName, DomainIndex + 1), DeviceName)

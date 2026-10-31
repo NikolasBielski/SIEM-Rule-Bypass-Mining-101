@@ -1,0 +1,15 @@
+// hunt-ready (watchlist): Multiple Teams deleted by a single user
+// challenge: CH2
+// original rule window: queryFrequency=P1D  queryPeriod=P1D  |  hunt widened to scan the full 730d watchlist (step/bin sizes preserved)
+// backtest: set the Logs time-picker to 'Set in query' (or Last 2 years)
+// functions used: OfficeActivity_CH2
+
+// Adjust this value to change how many Teams should be deleted before including
+let max_delete_count = 3;
+// Adjust this value to change the timewindow the query runs over
+  OfficeActivity_CH2
+| where OfficeWorkload =~ "MicrosoftTeams"
+| where Operation =~ "TeamDeleted"
+| summarize StartTime = min(TimeGenerated), EndTime = max(TimeGenerated), DeletedTeams = make_set(TeamName, 1000) by UserId
+| where array_length(DeletedTeams) > max_delete_count
+| extend AccountName = tostring(split(UserId, "@")[0]), AccountUPNSuffix = tostring(split(UserId, "@")[1])

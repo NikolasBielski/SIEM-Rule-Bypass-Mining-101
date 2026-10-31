@@ -1,0 +1,60 @@
+// hunt-ready (watchlist): Email access via active sync
+// challenge: CH1
+// original rule window: queryFrequency=P1D  queryPeriod=P1D  |  hunt widened to scan the full 730d watchlist (step/bin sizes preserved)
+// backtest: set the Logs time-picker to 'Set in query' (or Last 2 years)
+// functions used: SecurityEvent_CH1
+// FLAGS: raw Event/Sysmon - map to Event_CH1 by hand
+
+let timeframe = 1d;
+let cmdList = dynamic(["Set-CASMailbox","ActiveSyncAllowedDeviceIDs","add"]);
+(union isfuzzy=true
+(
+SecurityEvent_CH1
+| where TimeGenerated >= ago(730d)
+| where EventID == 4688
+| where CommandLine has_all (cmdList)
+| project Type, TimeGenerated, Computer, Account, SubjectDomainName, SubjectUserName, Process, ParentProcessName, CommandLine
+| extend timestamp = TimeGenerated, AccountEntity = Account, HostEntity = Computer
+),
+( WindowsEvent
+| where TimeGenerated >= ago(730d)
+| where EventID == 4688
+| where EventData has_all (cmdList)
+| extend CommandLine = tostring(EventData.CommandLine) 
+| where CommandLine has_all (cmdList)
+| extend Account =  strcat(tostring(EventData.SubjectDomainName),"\\", tostring(EventData.SubjectUserName))
+| extend SubjectUserName = tostring(EventData.SubjectUserName)
+| extend SubjectDomainName = tostring(EventData.SubjectDomainName)
+| extend NewProcessName = tostring(EventData.NewProcessName)
+| extend Process=tostring(split(NewProcessName, '\\')[-1])
+| extend ParentProcessName = tostring(EventData.ParentProcessName)
+| project Type, TimeGenerated, Computer, Account, SubjectDomainName, SubjectUserName, Process, ParentProcessName, CommandLine
+| extend timestamp = TimeGenerated, AccountEntity = Account, HostEntity = Computer
+),
+(
+DeviceProcessEvents
+| where TimeGenerated >= ago(730d)
+| where InitiatingProcessCommandLine has_all (cmdList)
+| project Type, TimeGenerated, DeviceName, AccountName, InitiatingProcessAccountDomain, InitiatingProcessAccountName, InitiatingProcessFileName, InitiatingProcessParentFileName,  InitiatingProcessCommandLine
+| extend timestamp = TimeGenerated, AccountDomain = InitiatingProcessAccountDomain, AccountName = InitiatingProcessAccountName, HostEntity = DeviceName
+),
+(
+Event
+| where TimeGenerated > ago(730d)
+| where Source == "Microsoft-Windows-Sysmon"
+| where EventID == 1
+| extend EventData = parse_xml(EventData).DataItem.EventData.Data
+| mv-expand bagexpansion=array EventData
+| evaluate bag_unpack(EventData)
+| extend Key=tostring(['@Name']), Value=['#text']
+| evaluate pivot(Key, any(Value), TimeGenerated, Source, EventLog, Computer, EventLevel, EventLevelName, EventID, UserName, RenderedDescription, MG, ManagementGroupName, Type, _ResourceId)
+| where TimeGenerated >= ago(730d)
+| where CommandLine has_all (cmdList)
+| extend Type = strcat(Type, ": ", Source)
+| project Type, TimeGenerated, Computer, User, Process, ParentImage, CommandLine
+| extend timestamp = TimeGenerated, AccountEntity = User, HostEntity = Computer
+)
+)
+| extend HostName = tostring(split(HostEntity, ".")[0]), DomainIndex = toint(indexof(HostEntity, '.'))
+| extend HostNameDomain = iff(DomainIndex != -1, substring(HostEntity, DomainIndex + 1), HostEntity)
+| extend AccountName = tostring(split(AccountEntity, @'\')[1]), AccountDomain = tostring(split(AccountEntity, @'\')[0])

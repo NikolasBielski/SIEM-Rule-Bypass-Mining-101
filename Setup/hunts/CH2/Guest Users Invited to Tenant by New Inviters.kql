@@ -1,0 +1,27 @@
+// hunt-ready (watchlist): Guest Users Invited to Tenant by New Inviters
+// challenge: CH2
+// original rule window: queryFrequency=P1D  queryPeriod=P14D  |  hunt widened to scan the full 730d watchlist (step/bin sizes preserved)
+// backtest: set the Logs time-picker to 'Set in query' (or Last 2 years)
+// functions used: AuditLogs_CH2
+
+let inviting_users = (AuditLogs_CH2
+  | where TimeGenerated between(ago(14d)..ago(1d))
+  | where OperationName =~ "Invite external user"
+  | where Result =~ "success"
+  | extend InitiatingUserPrincipalName = tostring(parse_json(tostring(InitiatedBy.user)).userPrincipalName)
+  | where isnotempty(InitiatingUserPrincipalName)
+  | summarize by InitiatingUserPrincipalName);
+  AuditLogs_CH2
+  | where TimeGenerated > ago(730d)
+  | where OperationName =~ "Invite external user"
+  | where Result =~ "success"
+  | extend InitiatingUserPrincipalName = tostring(parse_json(tostring(InitiatedBy.user)).userPrincipalName)
+  | extend InitiatingAadUserId = tostring(InitiatedBy.user.id)
+  | extend InitiatingIPAddress = tostring(InitiatedBy.user.ipAddress)
+  | where isnotempty(InitiatingUserPrincipalName) and InitiatingUserPrincipalName !in (inviting_users)
+  | extend TargetUserPrincipalName = tostring(TargetResources[0].userPrincipalName)
+  | extend TargetAadUserId = tostring(TargetResources[0].id)
+  | extend invitingUser = InitiatingUserPrincipalName, invitedUserPrincipalName = TargetUserPrincipalName
+  | extend InitiatingAccountName = tostring(split(InitiatingUserPrincipalName, "@")[0]), InitiatingAccountUPNSuffix = tostring(split(InitiatingUserPrincipalName, "@")[1])
+  | extend TargetAccountName = tostring(split(TargetUserPrincipalName, "@")[0]), TargetAccountUPNSuffix = tostring(split(TargetUserPrincipalName, "@")[1])
+  | project-reorder TimeGenerated, OperationName, Result, TargetUserPrincipalName, TargetAadUserId, InitiatingUserPrincipalName, InitiatingAadUserId, InitiatingIPAddress

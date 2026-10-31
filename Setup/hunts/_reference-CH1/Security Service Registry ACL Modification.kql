@@ -1,0 +1,80 @@
+// hunt-ready (watchlist): Security Service Registry ACL Modification
+// challenge: CH1
+// original rule window: queryFrequency=P1D  queryPeriod=P1D  |  hunt widened to scan the full 730d watchlist (step/bin sizes preserved)
+// backtest: set the Logs time-picker to 'Set in query' (or Last 2 years)
+// functions used: SecurityEvent_CH1
+
+let servicelist = dynamic(['Services\\HealthService', 'Services\\Sense', 'Services\\WinDefend', 'Services\\MsSecFlt', 'Services\\DiagTrack', 'Services\\SgrmBroker', 'Services\\SgrmAgent', 'Services\\AATPSensorUpdater' , 'Services\\AATPSensor', 'Services\\mpssvc']);
+let filename = dynamic(["subinacl.exe",'SetACL.exe']);
+let parameters = dynamic (['/deny=SYSTEM', '/deny=S-1-5-18', '/grant=SYSTEM=r', '/grant=S-1-5-18=r', 'n:SYSTEM;p:READ', 'n1:SYSTEM;ta:remtrst;w:dacl']);
+let FullAccess = dynamic(['A;CI;KA;;;SY', 'A;ID;KA;;;SY', 'A;CIID;KA;;;SY']);
+let ReadAccess = dynamic(['A;CI;KR;;;SY', 'A;ID;KR;;;SY', 'A;CIID;KR;;;SY']);
+let DenyAccess = dynamic(['D;CI;KR;;;SY', 'D;ID;KR;;;SY', 'D;CIID;KR;;;SY']);
+let timeframe = 1d;
+(union isfuzzy=true
+(
+SecurityEvent_CH1
+| where TimeGenerated >= ago(730d)
+| where EventID == 4670
+| where ObjectType == 'Key'
+| where ObjectName has_any (servicelist)
+| parse EventData with * 'OldSd">' OldSd "<" *
+| parse EventData with * 'NewSd">' NewSd "<" *
+| extend Reason = case( (OldSd has ';;;SY' and NewSd !has ';;;SY'), 'System Account is removed', (OldSd has_any (FullAccess) and NewSd has_any (ReadAccess)) , 'System permission has been changed to read from full access', (OldSd has_any (FullAccess) and NewSd has_any (DenyAccess)), 'System account has been given denied permission', 'None')
+| project TimeGenerated, Computer, Account,  ProcessName, ProcessId, ObjectName, EventData, Activity, HandleId, SubjectLogonId, OldSd, NewSd , Reason
+),
+(
+SecurityEvent_CH1
+| where TimeGenerated >= ago(730d)
+| where EventID == 4688
+| extend ProcessName = tostring(split(NewProcessName, '\\')[-1])
+| where ProcessName in~ (filename)
+| where CommandLine has_any (servicelist) and CommandLine has_any (parameters)
+| project TimeGenerated, Computer, Account, AccountDomain, ProcessName, ProcessNameFullPath = NewProcessName, EventID, Activity, CommandLine, EventSourceName, Type
+),
+(
+WindowsEvent
+| where TimeGenerated >= ago(730d)
+| where EventID == 4670 and EventData has_any (servicelist) and EventData has 'Key'
+| extend ObjectType = tostring(EventData.ObjectType)
+| where ObjectType == 'Key'
+| extend ObjectName = tostring(EventData.ObjectName)
+| where ObjectName has_any (servicelist)
+| extend OldSd = tostring(EventData.OldSd)
+| extend NewSd = tostring(EventData.NewSd)
+| extend Reason = case( (OldSd has ';;;SY' and NewSd !has ';;;SY'), 'System Account is removed', (OldSd has_any (FullAccess) and NewSd has_any (ReadAccess)) , 'System permission has been changed to read from full access', (OldSd has_any (FullAccess) and NewSd has_any (DenyAccess)), 'System account has been given denied permission', 'None')
+| extend Account =  strcat(tostring(EventData.SubjectDomainName),"\\", tostring(EventData.SubjectUserName))
+| extend ProcessName = tostring(EventData.ProcessName)
+| extend ProcessId = tostring(EventData.ProcessId)
+| extend Activity= "4670 - Permissions on an object were changed."
+| extend HandleId = tostring(EventData.HandleId)
+| extend  SubjectLogonId = tostring(EventData.SubjectLogonId)
+| project TimeGenerated, Computer, Account,  ProcessName, ProcessId, ObjectName, EventData, Activity, HandleId, SubjectLogonId, OldSd, NewSd , Reason
+),
+(
+WindowsEvent
+| where TimeGenerated >= ago(730d)
+| where EventID == 4688 and EventData has_any (filename) and EventData has_any (servicelist) and EventData has_any (parameters)
+| extend NewProcessName = tostring(EventData.NewProcessName)
+| extend ProcessName = tostring(split(NewProcessName, '\\')[-1])
+| where ProcessName in~ (filename)
+| extend CommandLine = tostring(EventData.CommandLine)
+| where CommandLine has_any (servicelist) and CommandLine has_any (parameters)
+| extend  Account =  strcat(tostring(EventData.SubjectDomainName),"\\", tostring(EventData.SubjectUserName))
+| extend  AccountDomain = tostring(EventData.AccountDomain)
+| extend  Activity="4688 - A new process has been created."
+| extend  EventSourceName=Provider
+| project TimeGenerated, Computer, Account, AccountDomain, ProcessName, ProcessNameFullPath = NewProcessName, EventID, Activity, CommandLine, EventSourceName, Type
+),
+(
+DeviceProcessEvents
+| where TimeGenerated >= ago(730d)
+| where InitiatingProcessFileName in~ (filename)
+| where InitiatingProcessCommandLine has_any(servicelist) and InitiatingProcessCommandLine has_any (parameters)
+| extend Account = iff(isnotempty(InitiatingProcessAccountUpn), InitiatingProcessAccountUpn, InitiatingProcessAccountName), Computer = DeviceName
+| project TimeGenerated, Computer, Account, AccountDomain, ProcessName = InitiatingProcessFileName, ProcessNameFullPath = FolderPath, Activity = ActionType, CommandLine = InitiatingProcessCommandLine, Type, InitiatingProcessParentFileName
+)
+)
+| extend AccountName = tostring(split(Account, "\\")[0]), AccountNTDomain = tostring(split(Account, "\\")[1])
+| extend HostName = tostring(split(Computer, ".")[0]), DomainIndex = toint(indexof(Computer, '.'))
+| extend HostNameDomain = iff(DomainIndex != -1, substring(Computer, DomainIndex + 1), Computer)

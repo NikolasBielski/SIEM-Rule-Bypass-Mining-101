@@ -1,0 +1,40 @@
+// hunt-ready (watchlist): Failed AzureAD logons but success logon to AWS Console
+// challenge: CH2
+// original rule window: queryFrequency=P1D  queryPeriod=P1D  |  hunt widened to scan the full 730d watchlist (step/bin sizes preserved)
+// backtest: set the Logs time-picker to 'Set in query' (or Last 2 years)
+// functions used: SigninLogs_CH2
+// FLAGS: table(variable) - fix the let/tableName refs by hand | also unions AADNonInteractiveUserSignInLogs (no watchlist)
+
+//Adjust this threshold to fit your environment
+let signin_threshold = 5;
+//Make a list of IPs with AAD signin failures above our threshold
+let aadFunc = (tableName:string){
+let Suspicious_signins =
+table(tableName)
+| where ResultType !in ("0", "50125", "50140")
+| where IPAddress !in ("127.0.0.1", "::1")
+| summarize count() by IPAddress
+| where count_ >  signin_threshold
+| summarize make_set(IPAddress);
+Suspicious_signins
+};
+let aadSignin = aadFunc("SigninLogs_CH2");
+let aadNonInt = aadFunc("AADNonInteractiveUserSignInLogs");
+let Suspicious_signins =
+union isfuzzy=true aadSignin, aadNonInt
+| summarize make_set(set_IPAddress);
+//See if any of those IPs have sucessfully logged into the AWS console
+AWSCloudTrail
+| where EventName =~ "ConsoleLogin"
+| extend LoginResult = tostring(parse_json(ResponseElements).ConsoleLogin)
+| where LoginResult =~ "Success"
+| where SourceIpAddress in (Suspicious_signins)
+| extend Reason = "Multiple failed AAD logins from IP address"
+| extend MFAUsed = tostring(parse_json(AdditionalEventData).MFAUsed)
+| extend UserIdentityArn = iif(isempty(UserIdentityArn), tostring(parse_json(Resources)[0].ARN), UserIdentityArn)
+| extend UserName = tostring(split(UserIdentityArn, '/')[-1])
+| extend AccountName = case( UserIdentityPrincipalid == "Anonymous", "Anonymous", isempty(UserIdentityUserName), UserName, UserIdentityUserName)
+| extend AccountName = iif(AccountName contains "@", tostring(split(AccountName, '@', 0)[0]), AccountName),
+  AccountUPNSuffix = iif(AccountName contains "@", tostring(split(AccountName, '@', 1)[0]), "")
+| summarize StartTime = min(TimeGenerated), EndTime = max(TimeGenerated) by Reason, LoginResult, EventTypeName, UserIdentityType, RecipientAccountId, AccountName, AccountUPNSuffix, AWSRegion, SourceIpAddress, UserAgent, MFAUsed
+| extend timestamp = StartTime

@@ -1,0 +1,29 @@
+// hunt-ready (watchlist): Non Domain Controller Active Directory Replication
+// challenge: CH1
+// original rule window: queryFrequency=P1D  queryPeriod=P7D  |  hunt widened to scan the full 730d watchlist (step/bin sizes preserved)
+// backtest: set the Logs time-picker to 'Set in query' (or Last 2 years)
+// functions used: SecurityEvent_CH1
+
+// Enter a reference list of hostnames for your DC servers
+//let DCServersList = dynamic (["DC01.simulandlabs.com","DC02.simulandlabs.com"]);
+SecurityEvent_CH1
+//| where Computer in (DCServersList)
+| where EventID == 4662 and ObjectServer == 'DS'
+| where AccountType != 'Machine'
+| where Properties has '1131f6aa-9c07-11d1-f79f-00c04fc2dcd2' //DS-Replication-Get-Changes
+    or Properties has '1131f6ad-9c07-11d1-f79f-00c04fc2dcd2' //DS-Replication-Get-Changes-All
+    or Properties has '89e95b76-444d-4c62-991a-0facbeda640c' //DS-Replication-Get-Changes-In-Filtered-Set
+| project TimeGenerated, Account, Activity, Properties, SubjectLogonId, Computer
+| join kind=leftouter
+(
+    SecurityEvent_CH1
+    //| where Computer in (DCServersList)
+    | where EventID == 4624 and LogonType == 3
+    | where AccountType != 'Machine'
+    | project TargetLogonId, IpAddress
+)
+on $left.SubjectLogonId == $right.TargetLogonId
+| project-reorder TimeGenerated, Computer, Account, IpAddress
+| extend HostName = tostring(split(Computer, ".")[0]), DomainIndex = toint(indexof(Computer, '.'))
+| extend HostNameDomain = iff(DomainIndex != -1, substring(Computer, DomainIndex + 1), Computer)
+| extend AccountName = tostring(split(Account, "\\")[0]), AccountNTDomain = tostring(split(Account, "\\")[1])

@@ -1,0 +1,30 @@
+// hunt-ready (watchlist): Office Policy Tampering
+// challenge: CH2
+// original rule window: queryFrequency=P1D  queryPeriod=P1D  |  hunt widened to scan the full 730d watchlist (step/bin sizes preserved)
+// backtest: set the Logs time-picker to 'Set in query' (or Last 2 years)
+// functions used: OfficeActivity_CH2
+
+let opList = OfficeActivity_CH2 
+| summarize by Operation
+//| where Operation startswith "Remove-" or Operation startswith "Disable-"
+| where Operation has_any ("Remove", "Disable")
+| where Operation contains "AntiPhish" or Operation contains "SafeAttachment" or Operation contains "SafeLinks" or Operation contains "Dlp" or Operation contains "Audit"
+| summarize make_set(Operation, 500);
+OfficeActivity_CH2
+// Only admin or global-admin can disable/remove policy
+| where RecordType =~ "ExchangeAdmin"
+| where UserType in~ ("Admin","DcAdmin")
+// Pass in interesting Operation list
+| where Operation in~ (opList)
+| extend ClientIPOnly = case( 
+ClientIP has ".", tostring(split(ClientIP,":")[0]), 
+ClientIP has "[", tostring(trim_start(@'[[]',tostring(split(ClientIP,"]")[0]))),
+ClientIP
+)  
+| extend Port = case(
+ClientIP has ".", (split(ClientIP,":")[1]),
+ClientIP has "[", tostring(split(ClientIP,"]:")[1]),
+ClientIP
+)
+| summarize StartTimeUtc = min(TimeGenerated), EndTimeUtc = max(TimeGenerated), OperationCount = count() by Operation, UserType, UserId, ClientIP = ClientIPOnly, Port, ResultStatus, Parameters
+| extend AccountName = tostring(split(UserId, "@")[0]), AccountUPNSuffix = tostring(split(UserId, "@")[1])

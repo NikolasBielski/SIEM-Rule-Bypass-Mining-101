@@ -1,0 +1,41 @@
+// hunt-ready (watchlist): Deprecated - Silk Typhoon UM Service writing suspicious file
+// challenge: CH1
+// original rule window: queryFrequency=P1D  queryPeriod=P1D  |  hunt widened to scan the full 730d watchlist (step/bin sizes preserved)
+// backtest: set the Logs time-picker to 'Set in query' (or Last 2 years)
+// functions used: SecurityEvent_CH1
+
+let scriptExtensions = dynamic([".php", ".jsp", ".js", ".aspx", ".asmx", ".asax", ".cfm", ".shtml"]);
+union isfuzzy=true
+(SecurityEvent_CH1
+| where EventID == 4663
+| where Process has_any ("umworkerprocess.exe", "UMService.exe")
+| where ObjectName has_any (scriptExtensions)
+| where AccessMask in ('0x2','0x100', '0x10', '0x4')
+| extend timestamp = TimeGenerated, AccountCustomEntity = Account, HostCustomEntity = Computer, IPCustomEntity = IpAddress
+),
+  (WindowsEvent
+| where EventID == 4663 and EventData has_any ("umworkerprocess.exe", "UMService.exe") and EventData has_any (scriptExtensions) 
+| where EventData has_any ('0x2','0x100', '0x10', '0x4')
+| extend NewProcessName = tostring(EventData.NewProcessName)
+| extend Process=tostring(split(NewProcessName, '\\')[-1])
+| where Process has_any ("umworkerprocess.exe", "UMService.exe")
+| extend ObjectName = tostring(EventData.ObjectName)
+| where ObjectName has_any (scriptExtensions)
+| extend AccessMask = tostring(EventData.AccessMask)
+| where AccessMask in ('0x2','0x100', '0x10', '0x4')
+| extend Account = strcat(EventData.SubjectDomainName,"\\", EventData.SubjectUserName)
+| extend IpAddress = tostring(EventData.IpAddress)
+| extend timestamp = TimeGenerated, AccountCustomEntity = Account, HostCustomEntity = Computer, IPCustomEntity = IpAddress
+),
+(imFileEvent
+| where EventType == "FileCreated"
+| where ActingProcessName has_any ("umworkerprocess.exe", "UMService.exe")
+  and
+  TargetFileName has_any (scriptExtensions)
+| extend timestamp = TimeGenerated, AccountCustomEntity = ActorUsername, HostCustomEntity = DvcHostname
+),
+(DeviceFileEvents
+| where ActionType =~ "FileCreated"
+| where InitiatingProcessFileName has_any ("umworkerprocess.exe", "UMService.exe")
+| where FileName has_any(scriptExtensions)
+| extend timestamp = TimeGenerated, AccountCustomEntity = InitiatingProcessAccountUpn, HostCustomEntity = DeviceName, IPCustomEntity = RequestSourceIP)

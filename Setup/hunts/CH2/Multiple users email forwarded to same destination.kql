@@ -1,0 +1,28 @@
+// hunt-ready (watchlist): Multiple users email forwarded to same destination
+// challenge: CH2
+// original rule window: queryFrequency=P1D  queryPeriod=P7D  |  hunt widened to scan the full 730d watchlist (step/bin sizes preserved)
+// backtest: set the Logs time-picker to 'Set in query' (or Last 2 years)
+// functions used: OfficeActivity_CH2
+
+let queryfrequency = 730d;
+let queryperiod = 730d;
+OfficeActivity_CH2
+| where TimeGenerated > ago(730d)
+| where OfficeWorkload =~ "Exchange"
+//| where Operation in ("Set-Mailbox", "New-InboxRule", "Set-InboxRule")
+| where Parameters has_any ("ForwardTo", "RedirectTo", "ForwardingSmtpAddress")
+| mv-apply DynamicParameters = todynamic(Parameters) on (summarize ParsedParameters = make_bag(bag_pack(tostring(DynamicParameters.Name), DynamicParameters.Value)))
+| evaluate bag_unpack(ParsedParameters, columnsConflict='replace_source')
+| extend DestinationMailAddress = tolower(case(
+    isnotempty(column_ifexists("ForwardTo", "")), column_ifexists("ForwardTo", ""),
+    isnotempty(column_ifexists("RedirectTo", "")), column_ifexists("RedirectTo", ""),
+    isnotempty(column_ifexists("ForwardingSmtpAddress", "")), trim_start(@"smtp:", column_ifexists("ForwardingSmtpAddress", "")),
+    ""))
+| where isnotempty(DestinationMailAddress)
+| mv-expand split(DestinationMailAddress, ";")
+| extend ClientIPValues = extract_all(@'\[?(::ffff:)?(?P<IPAddress>(\d+\.\d+\.\d+\.\d+)|[^\]]+)\]?([-:](?P<Port>\d+))?', dynamic(["IPAddress", "Port"]), ClientIP)[0]
+| extend ClientIP = tostring(ClientIPValues[0]), Port = tostring(ClientIPValues[1])
+| summarize StartTime = min(TimeGenerated), EndTime = max(TimeGenerated), DistinctUserCount = dcount(UserId), UserId = make_set(UserId, 250), Ports = make_set(Port, 250), EventCount = count() by tostring(DestinationMailAddress), ClientIP
+| where DistinctUserCount > 1 and EndTime > ago(queryfrequency)
+| mv-expand UserId to typeof(string)
+| extend AccountName = tostring(split(UserId, "@")[0]), AccountUPNSuffix = tostring(split(UserId, "@")[1])

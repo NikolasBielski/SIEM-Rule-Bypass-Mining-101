@@ -1,0 +1,49 @@
+// hunt-ready (watchlist): Deprecated - Cadet Blizzard Actor IOC - January 2022
+// challenge: CH1+CH3
+// original rule window: queryFrequency=PT6H  queryPeriod=PT6H  |  hunt widened to scan the full 730d watchlist (step/bin sizes preserved)
+// backtest: set the Logs time-picker to 'Set in query' (or Last 2 years)
+// functions used: CommonSecurityLog_CH3, SecurityEvent_CH1
+// FLAGS: externaldata - external URL, not a table | raw Event/Sysmon - map to Event_CH1 by hand
+
+let iocs = externaldata(DateAdded:string,IoC:string,Type:string,TLP:string) [@"https://raw.githubusercontent.com/Azure/Azure-Sentinel/master/Sample%20Data/Feeds/DEV-0586.csv"] with (format="csv", ignoreFirstRecord=True);
+let sha256Hashes = (iocs | where Type =~ "sha256" | project IoC);
+let Command_Line = (iocs | where Type =~ "CommandLine" | project IoC);
+(union isfuzzy=true
+(DeviceProcessEvents
+| where InitiatingProcessSHA256 in (sha256Hashes) or SHA256 in (sha256Hashes) or ( InitiatingProcessCommandLine has ('127.0.0.1\\ADMIN$') and InitiatingProcessCommandLine has_any (Command_Line))
+| project TimeGenerated, ActionType, DeviceId, DeviceName, InitiatingProcessAccountDomain, InitiatingProcessAccountName, InitiatingProcessCommandLine, InitiatingProcessFolderPath, InitiatingProcessId, InitiatingProcessParentFileName, InitiatingProcessFileName,  InitiatingProcessSHA256, Type, AccountName, SHA256
+| extend Account = AccountName, Computer = DeviceName,  CommandLine = InitiatingProcessCommandLine, FileHash = case(InitiatingProcessSHA256 in (sha256Hashes), "InitiatingProcessSHA256", SHA256 in (sha256Hashes), "SHA256", "No Match")
+| extend timestamp = TimeGenerated, HostCustomEntity = Computer , AccountCustomEntity = Account, ProcessCustomEntity = InitiatingProcessFileName, FileHashCustomEntity = case(FileHash == "InitiatingProcessSHA256", InitiatingProcessSHA256, FileHash == "SHA256", SHA256, "No Match"), AlgorithmCustomEntity = "SHA256"
+),
+( SecurityEvent_CH1
+| where EventID == 4688
+| where ( CommandLine has (@'127.0.0.1\\ADMIN$') and CommandLine has_any (Command_Line))
+| project TimeGenerated, Computer, NewProcessName, ParentProcessName, Account, NewProcessId, Type, EventID
+| extend timestamp = TimeGenerated, HostCustomEntity = Computer , AccountCustomEntity = Account, ProcessCustomEntity = NewProcessName
+),
+( CommonSecurityLog_CH3
+| where FileHash in (sha256Hashes)
+| project TimeGenerated, Message, SourceUserID, FileHash, Type
+| extend timestamp = TimeGenerated, FileHashCustomEntity = FileHash, Account = SourceUserID, AlgorithmCustomEntity = "SHA256"
+),
+( imFileEvent
+| where Hash in~ (sha256Hashes) or  ( ActingProcessCommandLine has ('127.0.0.1\\ADMIN$') and ActingProcessCommandLine has_any (Command_Line))
+| extend Account = ActorUsername, Computer = DvcHostname, IPAddress = SrcIpAddr, CommandLine = ActingProcessCommandLine, FileHash = TargetFileSHA256
+| project Type, TimeGenerated, Computer, Account, IPAddress, CommandLine, FileHash
+| extend timestamp = TimeGenerated, AccountCustomEntity = Account, HostCustomEntity = Computer, FileHashCustomEntity = FileHash, AlgorithmCustomEntity = "SHA256"
+),
+(Event
+| where Source == "Microsoft-Windows-Sysmon"
+| where EventID == 1
+| extend EvData = parse_xml(EventData)
+| extend EventDetail = EvData.DataItem.EventData.Data
+| extend Image = EventDetail.[4].["#text"],  CommandLine = EventDetail.[10].["#text"], Hashes = tostring(EventDetail.[17].["#text"])
+| extend Hashes = extract_all(@"(?P<key>\w+)=(?P<value>[a-zA-Z0-9]+)", dynamic(["key","value"]), Hashes)
+| extend Hashes = column_ifexists("Hashes", ""), CommandLine = column_ifexists("CommandLine", "")
+| extend Hashes = todynamic(Hashes) | mv-expand Hashes
+| where (Hashes[0] =~ "SHA256" and Hashes[1] has_any (sha256Hashes)) or ( CommandLine has ('127.0.0.1\\ADMIN$') and CommandLine has_any (Command_Line)) 
+| project TimeGenerated, EventDetail, UserName, Computer, Type, Source, Hashes, CommandLine, Image
+| extend Type = strcat(Type, ": ", Source)
+| extend timestamp = TimeGenerated, HostCustomEntity = Computer , AccountCustomEntity = UserName, ProcessCustomEntity = tostring(split(Image, '\\', -1)[-1]), FileHashCustomEntity = tostring(Hashes[1]), AlgorithmCustomEntity = "SHA256"
+)
+)

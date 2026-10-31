@@ -1,0 +1,27 @@
+// hunt-ready (watchlist): Identify Mango Sandstorm powershell commands
+// challenge: CH1
+// original rule window: queryFrequency=P1D  queryPeriod=P1D  |  hunt widened to scan the full 730d watchlist (step/bin sizes preserved)
+// backtest: set the Logs time-picker to 'Set in query' (or Last 2 years)
+// functions used: ProcessCreate_CH1, SecurityEvent_CH1
+
+(union isfuzzy=true
+(SecurityEvent_CH1
+| where EventID == 4688
+| where Process has_any ("powershell.exe","powershell_ise.exe","pwsh.exe") and CommandLine has_cs "-exec bypass -w 1 -enc"
+| where CommandLine  contains_cs "UwB0AGEAcgB0AC0ASgBvAGIAIAAtAFMAYwByAGkAcAB0AEIAbABvAGMAawAgAHsAKABzAGEAcABzACAAKAAiAHAA"
+| extend DvcHostname = Computer, ProcessId = tostring(ProcessId), ActorUsername = Account
+),
+(DeviceProcessEvents
+| where FileName =~ "powershell.exe" and ProcessCommandLine has_cs "-exec bypass -w 1 -enc"
+| where ProcessCommandLine contains_cs "UwB0AGEAcgB0AC0ASgBvAGIAIAAtAFMAYwByAGkAcAB0AEIAbABvAGMAawAgAHsAKABzAGEAcABzACAAKAAiAHAA"
+| extend DvcHostname = DeviceName, ProcessId = tostring(InitiatingProcessId), ActorUsername = strcat(AccountDomain, @"\", AccountName)
+),
+(ProcessCreate_CH1
+| where Process has_any ("powershell.exe","powershell_ise.exe","pwsh.exe") and CommandLine has_cs "-exec bypass -w 1 -enc"
+| where CommandLine  contains_cs "UwB0AGEAcgB0AC0ASgBvAGIAIAAtAFMAYwByAGkAcAB0AEIAbABvAGMAawAgAHsAKABzAGEAcABzACAAKAAiAHAA"
+| extend ProcessId = tostring(TargetProcessId)
+)
+)
+| extend AccountName = tostring(split(ActorUsername, "\\")[0]), AccountNTDomain = tostring(split(ActorUsername, "\\")[1])
+| extend HostName = tostring(split(DvcHostname, ".")[0]), DomainIndex = toint(indexof(DvcHostname, '.'))
+| extend HostNameDomain = iff(DomainIndex != -1, substring(DvcHostname, DomainIndex + 1), DvcHostname)

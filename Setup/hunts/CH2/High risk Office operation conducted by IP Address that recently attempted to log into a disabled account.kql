@@ -1,0 +1,56 @@
+// hunt-ready (watchlist): High risk Office operation conducted by IP Address that recently attempted to log into a disabled account
+// challenge: CH2
+// original rule window: queryFrequency=P1D  queryPeriod=P8D  |  hunt widened to scan the full 730d watchlist (step/bin sizes preserved)
+// backtest: set the Logs time-picker to 'Set in query' (or Last 2 years)
+// functions used: OfficeActivity_CH2, SigninLogs_CH2
+
+let threshold = 100;
+let timeRange = ago(7d);
+let timeBuffer = 1;
+SigninLogs_CH2 
+| where TimeGenerated > timeRange
+| where ResultType == "50057" 
+| summarize StartTime = min(TimeGenerated), EndTime = max(TimeGenerated), disabledAccountLoginAttempts = count(), 
+disabledAccountsTargeted = dcount(UserPrincipalName), applicationsTargeted = dcount(AppDisplayName), disabledAccountSet = make_set(UserPrincipalName), 
+applicationSet = make_set(AppDisplayName) by IPAddress, AppId
+| order by disabledAccountLoginAttempts desc
+| join kind=inner (
+    // IPs are considered suspicious - and any related successful sign-ins are detected
+    SigninLogs_CH2
+    | where TimeGenerated > timeRange
+    | where ResultType == 0
+    | summarize successSigninStart = min(TimeGenerated), successSigninEnd = max(TimeGenerated), successfulAccountSigninCount = dcount(UserPrincipalName), successfulAccountSigninSet = make_set(UserPrincipalName, 15) by IPAddress
+    // Assume IPs associated with sign-ins from 100+ distinct user accounts are safe
+    | where successfulAccountSigninCount < threshold
+) on IPAddress  
+// IPs where attempts to authenticate as disabled user accounts originated, and had a non-zero success rate for some other account
+| where successfulAccountSigninCount != 0
+// Successful Account Signins occur within the same lookback period as the failed 
+| extend SuccessBeforeFailure = iff(successSigninStart >= StartTime and successSigninEnd <= EndTime, true, false)  
+| project StartTime, EndTime, IPAddress, disabledAccountLoginAttempts, disabledAccountsTargeted, disabledAccountSet, applicationSet, 
+successfulAccountSigninCount, successfulAccountSigninSet, successSigninStart, successSigninEnd, AppId
+| order by disabledAccountLoginAttempts
+// Break up the string of Succesfully signed into accounts into individual events
+| mvexpand successfulAccountSigninSet
+| extend JoinedOnIp = IPAddress
+| join kind = inner (
+      OfficeActivity_CH2
+    | where TimeGenerated > timeRange
+    | where Operation in~ ( "Add-MailboxPermission", "Add-MailboxFolderPermission", "Set-Mailbox", "New-ManagementRoleAssignment", "New-InboxRule", "Set-InboxRule", "Set-TransportRule") and not(UserId has_any ('NT AUTHORITY\\SYSTEM (Microsoft.Exchange.ServiceHost)', 'NT AUTHORITY\\SYSTEM (w3wp)', 'devilfish-applicationaccount'))
+    // Remove port from the end of the IP and/or square brackets around IP, if they exist 
+    | extend JoinedOnIp = case(
+      ClientIP matches regex @'\[((25[0-5]2[0-4][0-9]|[01]?[0-9][0-9]?)\.){3}(25[0-5]2[0-4][0-9]|[01]?[0-9][0-9]?)\]-\d{1,5}', tostring(extract('\\[([0-9]+\\.[0-9]+\\.[0-9]+)\\]-[0-9]+', 1, ClientIP)),
+      ClientIP matches regex @'\[((25[0-5]2[0-4][0-9]|[01]?[0-9][0-9]?)\.){3}(25[0-5]2[0-4][0-9]|[01]?[0-9][0-9]?)\]', tostring(extract('\\[([0-9]+\\.[0-9]+\\.[0-9]+)\\]', 1, ClientIP)),  
+      ClientIP matches regex @'(((25[0-5]2[0-4][0-9]|[01]?[0-9][0-9]?)\.){3}(25[0-5]2[0-4][0-9]|[01]?[0-9][0-9]?))-\d{1,5}', tostring(extract('([0-9]+\\.[0-9]+\\.[0-9]+)-[0-9]+', 1, ClientIP)),
+      ClientIP matches regex @'((25[0-5]2[0-4][0-9]|[01]?[0-9][0-9]?)\.){3}(25[0-5]2[0-4][0-9]|[01]?[0-9][0-9]?)', ClientIP,       
+      ClientIP matches regex @'\[((?:[0-9a-fA-F]{1,4}::?){1,8}[0-9a-fA-F]{1,4}|\d{1,3}(?:\.\d{1,3}){3})\]-\d{1,5}', tostring(extract('\\[((?:[0-9a-fA-F]{1,4}::?){1,8}[0-9a-fA-F]{1,4}|\\d{1,3}(?:\\.\\d{1,3}){3})\\]-[0-9]+', 1, ClientIP)),
+      ClientIP matches regex @'\[((?:[0-9a-fA-F]{1,4}::?){1,8}[0-9a-fA-F]{1,4}|\d{1,3}(?:\.\d{1,3}){3})\]', tostring(extract('\\[((?:[0-9a-fA-F]{1,4}::?){1,8}[0-9a-fA-F]{1,4}|\\d{1,3}(?:\\.\\d{1,3}){3})\\]', 1, ClientIP)),  
+      ClientIP matches regex @'((?:[0-9a-fA-F]{1,4}::?){1,8}[0-9a-fA-F]{1,4}|\d{1,3}(?:\.\d{1,3}){3})-\d{1,5}', tostring(extract('((?:[0-9a-fA-F]{1,4}::?){1,8}[0-9a-fA-F]{1,4}|\\d{1,3}(?:\\.\\d{1,3}){3})-[0-9]+', 1, ClientIP)),
+      ClientIP matches regex @'((?:[0-9a-fA-F]{1,4}::?){1,8}[0-9a-fA-F]{1,4}|\d{1,3}(?:\.\d{1,3}){3})', ClientIP,
+      "")
+    | where isnotempty(JoinedOnIp)
+    | extend OfficeTimeStamp = ElevationTime, UserPrincipalName = UserId
+) on JoinedOnIp
+// Rare and risky operations only happen within a certain time range of the successful sign-in
+| where OfficeTimeStamp >= successSigninStart and datetime_diff('day', OfficeTimeStamp, successSigninEnd) <= timeBuffer
+| extend AccountName = tostring(split(UserPrincipalName, "@")[0]), AccountUPNSuffix = tostring(split(UserPrincipalName, "@")[1])

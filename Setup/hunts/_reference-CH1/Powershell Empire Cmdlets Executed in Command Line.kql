@@ -1,0 +1,50 @@
+// hunt-ready (watchlist): Powershell Empire Cmdlets Executed in Command Line
+// challenge: CH1
+// original rule window: queryFrequency=PT12H  queryPeriod=PT12H  |  hunt widened to scan the full 730d watchlist (step/bin sizes preserved)
+// backtest: set the Logs time-picker to 'Set in query' (or Last 2 years)
+// functions used: SecurityEvent_CH1
+// FLAGS: externaldata - external URL, not a table
+
+let regexEmpire = tostring(toscalar(externaldata(cmdlets:string)[@"https://raw.githubusercontent.com/Azure/Azure-Sentinel/master/Sample%20Data/Feeds/EmpireCommandString.txt"] with (format="txt")));
+(union isfuzzy=true
+ (SecurityEvent_CH1
+| where EventID == 4688
+//consider filtering on filename if perf issues occur
+//where FileName in~ ("powershell.exe","powershell_ise.exe","pwsh.exe")
+| where not(ParentProcessName has_any ('gc_worker.exe', 'gc_service.exe'))
+| where CommandLine has "-encodedCommand"
+| parse kind=regex flags=i CommandLine with * "-EncodedCommand " encodedCommand
+| extend encodedCommand = iff(encodedCommand has " ", tostring(split(encodedCommand, " ")[0]), encodedCommand)
+// Note: currently the base64_decode_tostring function is limited to supporting UTF8
+| extend decodedCommand = translate('\0','', base64_decode_tostring(substring(encodedCommand, 0, strlen(encodedCommand) -  (strlen(encodedCommand) %8)))), encodedCommand, CommandLine , strlen(encodedCommand)
+| extend EfectiveCommand = iff(isnotempty(encodedCommand), decodedCommand, CommandLine)
+| where EfectiveCommand matches regex regexEmpire
+| project timestamp = TimeGenerated, Computer, SubjectUserName, SubjectDomainName, FileName = Process, EfectiveCommand, decodedCommand, encodedCommand, CommandLine, ParentProcessName
+| extend HostName = split(Computer, '.', 0)[0], DnsDomain = strcat_array(array_slice(split(Computer, '.'), 1, -1), '.')
+),
+(WindowsEvent
+| where EventID == 4688
+| where EventData has_any ("-encodedCommand", "powershell.exe","powershell_ise.exe","pwsh.exe")
+| where not(EventData has_any ('gc_worker.exe', 'gc_service.exe'))
+//consider filtering on filename if perf issues occur
+//extend NewProcessName = tostring(EventData.NewProcessName)
+//extend Process=tostring(split(NewProcessName, '\\')[-1])
+//FileName = Process
+//where FileName in~ ("powershell.exe","powershell_ise.exe","pwsh.exe")
+| extend ParentProcessName = tostring(EventData.ParentProcessName)
+| where not(ParentProcessName has_any ('gc_worker.exe', 'gc_service.exe'))
+| extend CommandLine = tostring(EventData.CommandLine)
+| where CommandLine has "-encodedCommand"
+| parse kind=regex flags=i CommandLine with * "-EncodedCommand " encodedCommand
+| extend encodedCommand = iff(encodedCommand has " ", tostring(split(encodedCommand, " ")[0]), encodedCommand)
+// Note: currently the base64_decode_tostring function is limited to supporting UTF8
+| extend decodedCommand = translate('\0','', base64_decode_tostring(substring(encodedCommand, 0, strlen(encodedCommand) -  (strlen(encodedCommand) %8)))), encodedCommand, CommandLine , strlen(encodedCommand)
+| extend EfectiveCommand = iff(isnotempty(encodedCommand), decodedCommand, CommandLine)
+| where EfectiveCommand matches regex regexEmpire
+| extend SubjectUserName = tostring(EventData.SubjectUserName)
+| extend SubjectDomainName = tostring(EventData.SubjectDomainName)
+| extend NewProcessName = tostring(EventData.NewProcessName)
+| extend Process=tostring(split(NewProcessName, '\\')[-1])
+| project timestamp = TimeGenerated, Computer, SubjectUserName, SubjectDomainName, FileName = Process, EfectiveCommand, decodedCommand, encodedCommand, CommandLine, ParentProcessName
+| extend HostName = split(Computer, '.', 0)[0], DnsDomain = strcat_array(array_slice(split(Computer, '.'), 1, -1), '.')
+))

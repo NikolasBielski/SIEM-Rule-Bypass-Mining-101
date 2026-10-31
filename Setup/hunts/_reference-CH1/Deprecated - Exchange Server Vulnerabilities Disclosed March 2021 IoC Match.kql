@@ -1,0 +1,100 @@
+// hunt-ready (watchlist): Deprecated - Exchange Server Vulnerabilities Disclosed March 2021 IoC Match
+// challenge: CH1+CH3
+// original rule window: queryFrequency=PT1H  queryPeriod=PT1H  |  hunt widened to scan the full 730d watchlist (step/bin sizes preserved)
+// backtest: set the Logs time-picker to 'Set in query' (or Last 2 years)
+// functions used: CommonSecurityLog_CH3, SecurityEvent_CH1
+// FLAGS: externaldata - external URL, not a table | raw Event/Sysmon - map to Event_CH1 by hand
+
+let iocs = externaldata(DateAdded:string,FirstSeen:string,IoC:string,Type:string,TLP:string)
+[@"https://raw.githubusercontent.com/Azure/Azure-Sentinel/master/Sample%20Data/Feeds/MSTICIoCs-ExchangeServerVulnerabilitiesDisclosedMarch2021.csv"] with (format="csv", ignoreFirstRecord=True);
+let file_paths = (iocs | where Type =~ "filepath" | project IoC);
+let sha256s = (iocs | where Type =~ "sha256" | project IoC);
+let ips = (iocs | where Type =~ "ip" | project IoC);
+let domains = (iocs | where Type =~ "domainname" | project IoC);
+let dyndomains = todynamic(toscalar((domains | summarize make_set(IoC))));
+union isfuzzy=true
+(SecurityEvent_CH1
+| where EventID == 4663
+| where ObjectName in (file_paths)
+| extend timestamp = TimeGenerated, AccountCustomEntity = Account, HostCustomEntity = Computer
+),
+(WindowsEvent
+| where EventID == 4663 and EventData has_any (file_paths)
+| extend ObjectName = tostring(EventData.ObjectName) 
+| where ObjectName in (file_paths)
+| extend Account = strcat(tostring(EventData.SubjectDomainName), "\\", tostring(EventData.SubjectUserName))
+| extend timestamp = TimeGenerated, AccountCustomEntity = Account, HostCustomEntity = Computer
+),
+(imFileEvent
+| where TargetFileName in (file_paths)
+  or
+  TargetFileSHA256 in (sha256s)
+| extend timestamp = TimeGenerated, AccountCustomEntity = ActorUsername, HostCustomEntity = DvcHostname
+),
+(DeviceFileEvents
+| where FolderPath in (file_paths)
+| extend timestamp = TimeGenerated, AccountCustomEntity = InitiatingProcessAccountName, HostCustomEntity = DeviceName
+),
+(DeviceEvents
+| where InitiatingProcessSHA256 in (sha256s)
+| extend timestamp = TimeGenerated, AccountCustomEntity = InitiatingProcessAccountName, HostCustomEntity = DeviceName
+),
+  (CommonSecurityLog_CH3
+| where FileHash in (sha256s)
+| extend timestamp = TimeGenerated
+),
+(Event // File iocs
+//This query uses sysmon data depending on table name used this may need updating
+| where Source == "Microsoft-Windows-Sysmon"
+| extend EvData = parse_xml(EventData)
+| extend EventDetail = EvData.DataItem.EventData.Data
+| extend Hashes = EventDetail.[16].["#text"]
+| where isnotempty(Hashes)
+| parse Hashes with * 'SHA256=' SHA256 ',' *
+| where SHA256 in~ (sha256s)
+| extend Type = strcat(Type, ": ", Source), Account = UserName, FileHash = Hashes
+| extend timestamp = TimeGenerated, AccountCustomEntity = Account, HostCustomEntity = Computer
+),
+(CommonSecurityLog_CH3
+| where isnotempty(SourceIP) or isnotempty(DestinationIP)
+| where (SourceIP in (ips) or DestinationIP in (ips) or Message has_any (ips)) or (RequestURL has_any (domains))
+| extend IPMatch = case(SourceIP in (ips), "SourceIP", DestinationIP in (ips), "DestinationIP", "Message")
+| summarize StartTimeUtc = min(TimeGenerated), EndTimeUtc = max(TimeGenerated) by SourceIP, DestinationIP, DeviceProduct, DeviceAction, Message, Protocol, SourcePort, DestinationPort, DeviceAddress, DeviceName, IPMatch
+| extend timestamp = StartTimeUtc, IPCustomEntity = case(IPMatch == "SourceIP", SourceIP, IPMatch == "DestinationIP", DestinationIP, "IP in Message Field")
+),
+(Event
+| where Source == "Microsoft-Windows-Sysmon"
+| where EventID == 3
+| extend EvData = parse_xml(EventData)
+| extend EventDetail = EvData.DataItem.EventData.Data
+| extend SourceIP = EventDetail.[9].["#text"], DestinationIP = EventDetail.[14].["#text"]
+| where SourceIP in (ips) or DestinationIP in (ips)
+| extend IPMatch = case( SourceIP in (ips), "SourceIP", DestinationIP in (ips), "DestinationIP", "None")
+| extend timestamp = TimeGenerated, AccountCustomEntity = UserName, HostCustomEntity = Computer , IPCustomEntity = case(IPMatch == "SourceIP", SourceIP, IPMatch == "DestinationIP", DestinationIP, "None")
+),
+(WireData
+| where isnotempty(RemoteIP)
+| where RemoteIP in (ips)
+| extend timestamp = TimeGenerated, IPCustomEntity = RemoteIP, HostCustomEntity = Computer
+),
+(W3CIISLog
+| where isnotempty(cIP)
+| where cIP in (ips)
+| extend timestamp = TimeGenerated, IPCustomEntity = cIP, HostCustomEntity = Computer, AccountCustomEntity = csUserName
+),
+(
+WindowsFirewall
+| where SourceIP in (ips) or DestinationIP in (ips)
+| extend IPMatch = case( SourceIP in (ips), "SourceIP", DestinationIP in (ips), "DestinationIP", "None")
+),
+(
+  _Im_NetworkSession(srcipaddr_has_any_prefix=ips) 
+  | extend IPCustomEntity = SrcIpAddr, AccountCustomEntity= User, HostCustomEntity=Hostname
+),
+  (
+  _Im_NetworkSession(dstipaddr_has_any_prefix=ips) 
+  | extend IPCustomEntity = DstIpAddr, AccountCustomEntity= User, HostCustomEntity=Hostname
+),
+(_Im_Dns(domain_has_any=dyndomains)
+| extend timestamp = TimeGenerated, IPCustomEntity = SrcIpAddr, HostCustomEntity = Dvc
+)
